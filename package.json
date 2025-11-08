@@ -6,7 +6,9 @@
     "build": "next build",
     "dev": "next dev",
     "lint": "eslint .",
-    "start": "next start"
+    "start": "next start",
+    "server": "cd backend-server && node server.js",
+    "server:dev": "cd backend-server && node --watch server.js"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

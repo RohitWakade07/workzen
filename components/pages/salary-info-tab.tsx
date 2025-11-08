@@ -6,7 +6,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { AlertCircle } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { AlertCircle, Save, Loader2 } from "lucide-react"
+import { api } from "@/lib/api"
 
 interface SalaryComponent {
   id: string
@@ -68,9 +70,15 @@ const DEFAULT_SALARY_COMPONENTS: SalaryComponent[] = [
   },
 ]
 
-export default function SalaryInfoTab() {
+interface SalaryInfoTabProps {
+  employeeId?: string
+}
+
+export default function SalaryInfoTab(props: SalaryInfoTabProps = {}) {
+  const { employeeId: propEmployeeId } = props
   const { user } = useAuth()
   const isAdminOrPayroll = user?.role === "admin" || user?.role === "payroll_officer"
+  const employeeId = propEmployeeId || user?.employeeId || user?.id || ""
 
   const [monthWage, setMonthWage] = useState(50000)
   const [yearlyWage, setYearlyWage] = useState(600000)
@@ -79,9 +87,104 @@ export default function SalaryInfoTab() {
   const [salaryComponents, setSalaryComponents] = useState<SalaryComponent[]>(DEFAULT_SALARY_COMPONENTS)
   const [pfRate, setPfRate] = useState(12.0)
   const [professionalTax, setProfessionalTax] = useState(200.0)
+  const [isLoading, setIsLoading] = useState(true)
+  const [isSaving, setIsSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [successMessage, setSuccessMessage] = useState<string | null>(null)
 
   // Track which field was last updated to prevent circular updates
   const [lastUpdated, setLastUpdated] = useState<"month" | "year">("month")
+
+  // Fetch salary data on mount
+  useEffect(() => {
+    const fetchSalary = async () => {
+      if (!employeeId || !isAdminOrPayroll) {
+        setIsLoading(false)
+        return
+      }
+
+      try {
+        setIsLoading(true)
+        setError(null)
+        const response = await api.get<any>(`/api/employees/${employeeId}/salary`)
+
+        if (response.error) {
+          setError(response.error)
+        } else if (response.data) {
+          const data = response.data
+          setMonthWage(data.month_wage || 50000)
+          setYearlyWage(data.yearly_wage || 600000)
+          setWorkingDaysPerWeek(data.working_days_per_week?.toString() || "")
+          setBreakTime(data.break_time?.toString() || "")
+          setPfRate(data.pf_rate || 12.0)
+          setProfessionalTax(data.professional_tax || 200.0)
+
+          if (data.salary_components && Array.isArray(data.salary_components)) {
+            const components = data.salary_components.map((comp: any) => ({
+              id: comp.id,
+              name: comp.name,
+              computationType: comp.computation_type === "percentage" ? "percentage" : "fixed",
+              value: comp.value,
+              base: comp.base || "wage",
+              description: comp.description || "",
+            }))
+            setSalaryComponents(components.length > 0 ? components : DEFAULT_SALARY_COMPONENTS)
+          }
+        }
+      } catch (err) {
+        console.error("[Salary] Error fetching salary:", err)
+        setError("Failed to load salary data")
+      } finally {
+        setIsLoading(false)
+      }
+    }
+
+    fetchSalary()
+  }, [employeeId, isAdminOrPayroll])
+
+  const handleSaveSalary = async () => {
+    if (!employeeId) {
+      setError("Employee ID is required")
+      return
+    }
+
+    try {
+      setIsSaving(true)
+      setError(null)
+      setSuccessMessage(null)
+
+      const payload = {
+        month_wage: monthWage,
+        yearly_wage: yearlyWage,
+        working_days_per_week: workingDaysPerWeek ? parseInt(workingDaysPerWeek) : null,
+        break_time: breakTime ? parseFloat(breakTime) : null,
+        salary_components: salaryComponents.map((comp) => ({
+          id: comp.id,
+          name: comp.name,
+          computation_type: comp.computationType,
+          value: comp.value,
+          base: comp.base,
+          description: comp.description,
+        })),
+        pf_rate: pfRate,
+        professional_tax: professionalTax,
+      }
+
+      const response = await api.put(`/api/employees/${employeeId}/salary`, payload)
+
+      if (response.error) {
+        setError(response.error)
+      } else {
+        setSuccessMessage("Salary information updated successfully!")
+        setTimeout(() => setSuccessMessage(null), 3000)
+      }
+    } catch (err) {
+      console.error("[Salary] Error saving salary:", err)
+      setError("Failed to save salary information")
+    } finally {
+      setIsSaving(false)
+    }
+  }
 
   // Calculate yearly wage from monthly
   useEffect(() => {
@@ -173,12 +276,50 @@ export default function SalaryInfoTab() {
     )
   }
 
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="flex flex-col items-center gap-4">
+          <Loader2 className="w-8 h-8 animate-spin text-primary" />
+          <p className="text-muted-foreground">Loading salary information...</p>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-6">
-      <Alert>
-        <AlertCircle className="h-4 w-4" />
-        <AlertDescription>Salary Info tab should only be visible to Admin/Payroll Officer</AlertDescription>
-      </Alert>
+      <div className="flex items-center justify-between">
+        <Alert>
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription>Salary Info tab should only be visible to Admin/Payroll Officer</AlertDescription>
+        </Alert>
+        <Button onClick={handleSaveSalary} disabled={isSaving}>
+          {isSaving ? (
+            <>
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              Saving...
+            </>
+          ) : (
+            <>
+              <Save className="mr-2 h-4 w-4" />
+              Save Changes
+            </>
+          )}
+        </Button>
+      </div>
+
+      {error && (
+        <Alert variant="destructive">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
+
+      {successMessage && (
+        <Alert>
+          <AlertDescription>{successMessage}</AlertDescription>
+        </Alert>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Left Column */}

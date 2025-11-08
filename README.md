@@ -1,6 +1,6 @@
 # WorkZen HRMS - Enterprise Human Resource Management System
 
-A comprehensive, role-based HRMS platform with complete frontend (Next.js) and backend (FastAPI) implementation.
+A comprehensive, role-based HRMS platform with complete frontend (Next.js) and backend (Node.js/Express) implementation.
 
 ## Features
 
@@ -28,8 +28,7 @@ A comprehensive, role-based HRMS platform with complete frontend (Next.js) and b
 
 ### Prerequisites
 - Node.js 18+
-- Python 3.9+
-- PostgreSQL 12+ (optional - SQLite used by default for development)
+- npm or yarn
 
 ### Frontend Setup (Next.js)
 
@@ -51,58 +50,39 @@ Payroll Officer: payroll@test.com / password
 Admin:           admin@test.com / password
 \`\`\`
 
-### Backend Setup (FastAPI)
+### Backend Setup (Node.js/Express)
 
 \`\`\`bash
-# Navigate to backend directory
-cd backend
+# Navigate to backend-server directory
+cd backend-server
 
 # Install dependencies
-pip install -r requirements.txt
+npm install
 
 # Run development server
-python main.py
+npm start
 
-# API documentation available at http://localhost:8000/docs
+# Or for development with auto-reload
+npm run dev
+
+# Server runs on http://localhost:8000
 \`\`\`
 
-### Database Setup (PostgreSQL)
-
-#### Option 1: Local PostgreSQL
-
+**Or from the root directory:**
 \`\`\`bash
-# Create database
-createdb workzen_hrms
-
-# Run migration scripts
-psql -U postgres -d workzen_hrms -f scripts/001-init-schema.sql
-psql -U postgres -d workzen_hrms -f scripts/002-seed-data.sql
-
-# Set environment variable
-export DATABASE_URL="postgresql://postgres:password@localhost/workzen_hrms"
+npm run server        # Start server
+npm run server:dev    # Start with auto-reload
 \`\`\`
 
-#### Option 2: SQLite (Development - No Setup Required)
+### Database Setup
 
-Default fallback is SQLite for local development. No additional setup needed!
+Currently, the backend uses in-memory storage (mock data). For production, you can integrate with:
+- MongoDB
+- PostgreSQL
+- MySQL
+- Any other database of your choice
 
-#### Option 3: Docker
-
-\`\`\`bash
-# Start PostgreSQL container
-docker run --name workzen-db \
-  -e POSTGRES_DB=workzen_hrms \
-  -e POSTGRES_USER=postgres \
-  -e POSTGRES_PASSWORD=postgres \
-  -p 5432:5432 \
-  -d postgres:15
-
-# Set environment variable
-export DATABASE_URL="postgresql://postgres:postgres@localhost:5432/workzen_hrms"
-
-# Run migrations
-psql -U postgres -h localhost -d workzen_hrms -f scripts/001-init-schema.sql
-\`\`\`
+The API structure is ready for database integration. Simply replace the in-memory storage in `backend-server/routes/` with your database queries.
 
 ## Database Schema
 
@@ -156,9 +136,13 @@ GET    /api/auth/validate-token  - Token validation
 
 ### Employees
 \`\`\`
-GET    /api/employees/           - List employees
-GET    /api/employees/{id}       - Get employee details
-POST   /api/employees/           - Create employee
+GET    /api/employees/                    - List employees
+GET    /api/employees/{id}                - Get employee details
+POST   /api/employees/                    - Create employee
+GET    /api/employees/{id}/profile        - Get employee profile
+PUT    /api/employees/{id}/profile        - Update employee profile
+GET    /api/employees/{id}/salary          - Get employee salary
+PUT    /api/employees/{id}/salary         - Update employee salary
 \`\`\`
 
 ### Attendance
@@ -209,21 +193,15 @@ Check browser console (Frontend) and terminal (Backend) for execution flow.
 
 ## Environment Variables
 
+### Frontend (.env.local)
 \`\`\`env
-# Backend
-DATABASE_URL=postgresql://user:pass@localhost/workzen_hrms
-SECRET_KEY=your-secret-key-here
-ENVIRONMENT=development
-ECHO_SQL=false
+NEXT_PUBLIC_API_URL=http://localhost:8000
+\`\`\`
 
-# CORS
-CORS_ORIGINS=http://localhost:3000,http://localhost:8000
-
-# Email (optional)
-SMTP_SERVER=smtp.gmail.com
-SMTP_PORT=587
-SMTP_USER=your-email@gmail.com
-SMTP_PASSWORD=your-app-password
+### Backend (backend-server/.env)
+\`\`\`env
+PORT=8000
+NODE_ENV=development
 \`\`\`
 
 ## Deployment
@@ -234,10 +212,12 @@ npm run build
 vercel deploy
 \`\`\`
 
-### Backend (Railway/Heroku)
+### Backend (Railway/Heroku/Render)
 \`\`\`bash
 # Set environment variables in platform
-gunicorn -w 4 -b 0.0.0.0:8000 main:app
+# PORT will be set automatically by the platform
+cd backend-server
+npm start
 \`\`\`
 
 ## Data Flow & Status Workflows
@@ -273,16 +253,15 @@ Payroll Officer creates (draft)
 - **Styling issues**: Run `npm install` to ensure all dependencies are installed
 
 ### Backend Issues
-- **Database connection failed**: 
-  - Check PostgreSQL is running: `psql -U postgres`
-  - Or use default SQLite (no setup needed)
-- **Port 8000 already in use**: `kill $(lsof -t -i:8000)` or change port in `main.py`
-- **Module import errors**: Run `pip install -r requirements.txt`
+- **Port 8000 already in use**: 
+  - Windows: `netstat -ano | findstr :8000` then `taskkill /PID <pid> /F`
+  - Mac/Linux: `lsof -ti:8000 | xargs kill` or change PORT in `.env`
+- **Module import errors**: Run `cd backend-server && npm install`
+- **Server not starting**: Check Node.js version (requires 18+)
 
 ### Database Issues
-- **Migration failed**: Check script syntax in `scripts/` directory
-- **Constraint violations**: Review seed data and ensure proper relationships
-- **Performance slow**: Check indexes are created: `\di` in psql
+- Currently using in-memory storage. For production, integrate with your preferred database.
+- Data is reset on server restart. Implement database persistence for production use.
 
 ## Testing
 
@@ -337,9 +316,9 @@ Payroll Officer creates (draft)
 ## Support & Documentation
 
 - **Frontend Debug**: Check browser console for `[v0]` prefixed messages
-- **Backend Debug**: Check terminal output during API calls
-- **Database Schema**: Review `scripts/001-init-schema.sql`
-- **API Docs**: Visit `http://localhost:8000/docs` (Swagger)
+- **Backend Debug**: Check terminal output during API calls (look for `[v0]` prefix)
+- **API Endpoints**: See `backend-server/routes/` for all available endpoints
+- **Server Logs**: All requests are logged with `[v0]` prefix in the console
 
 ## License
 
@@ -349,9 +328,8 @@ MIT License - Free for commercial and personal use
 
 **Built with:**
 - Next.js 16 (Frontend)
-- FastAPI (Backend)
-- PostgreSQL (Database)
+- Node.js/Express (Backend)
 - TailwindCSS (Styling)
-- SQLAlchemy (ORM)
+- TypeScript (Type Safety)
 
 Made for enterprise HR management with ❤️
