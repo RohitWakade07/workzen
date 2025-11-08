@@ -2,12 +2,13 @@
 
 import type React from "react"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ArrowLeft, Plus, Edit2, Trash2, Search, Phone, Mail, Loader2 } from "lucide-react"
 import { api } from "@/lib/api"
+import { useAuth } from "@/lib/auth-context"
 
 interface EmployeeManagementModuleProps {
   onBack: () => void
@@ -25,8 +26,54 @@ interface Employee {
   status: "active" | "inactive" | "on-leave"
 }
 
+interface EmployeeFormState {
+  name: string
+  email: string
+  phone: string
+  department: string
+  position: string
+  employeeId: string
+  status: Employee["status"]
+}
+
+const STATUS_OPTIONS: Array<{ label: string; value: Employee["status"] }> = [
+  { label: "Active", value: "active" },
+  { label: "Inactive", value: "inactive" },
+  { label: "On Leave", value: "on-leave" },
+]
+
+const DEFAULT_DEPARTMENTS = ["General", "Engineering", "Marketing", "Sales", "HR", "Finance", "Operations", "Support"]
+
+const mapApiEmployee = (emp: any): Employee => ({
+  id: emp.id || emp.employee_id,
+  name:
+    emp.first_name && emp.last_name
+      ? `${emp.first_name} ${emp.last_name}`
+      : emp.name || "Unknown",
+  email: emp.email,
+  phone: emp.phone || "",
+  department: emp.department || "Unknown",
+  position: emp.position || "Employee",
+  employeeId: emp.employee_id,
+  joinDate: emp.date_of_joining || new Date().toISOString().split("T")[0],
+  status: emp.status === "inactive" ? "inactive" : emp.status === "on-leave" ? "on-leave" : "active",
+})
+
+const createEmptyFormState = (): EmployeeFormState => ({
+  name: "",
+  email: "",
+  phone: "",
+  department: "",
+  position: "",
+  employeeId: "",
+  status: "active",
+})
+
 export default function EmployeeManagementModule({ onBack }: EmployeeManagementModuleProps) {
   console.log("[v0] EmployeeManagementModule: Rendered")
+
+  const { user } = useAuth()
+  const canAddEmployee = !!user && (user.role === "admin" || user.role === "hr_officer")
 
   const [showForm, setShowForm] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")
@@ -34,104 +81,135 @@ export default function EmployeeManagementModule({ onBack }: EmployeeManagementM
   const [employees, setEmployees] = useState<Employee[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [formError, setFormError] = useState<string | null>(null)
+  const [editingEmployeeId, setEditingEmployeeId] = useState<string | null>(null)
+  const [isSubmitting, setIsSubmitting] = useState(false)
 
-  useEffect(() => {
-    const fetchEmployees = async () => {
-      try {
-        setIsLoading(true)
-        setError(null)
-        const response = await api.get<any[]>("/api/employees/")
-        if (response.error) {
-          setError(response.error)
-        } else if (response.data) {
-          const transformedEmployees = response.data.map((emp: any) => ({
-            id: emp.id || emp.employee_id,
-            name: emp.first_name && emp.last_name 
-              ? `${emp.first_name} ${emp.last_name}` 
-              : emp.name || "Unknown",
-            email: emp.email,
-            phone: emp.phone || "",
-            department: emp.department || "Unknown",
-            position: emp.position || "Employee",
-            employeeId: emp.employee_id,
-            joinDate: emp.date_of_joining || new Date().toISOString().split("T")[0],
-            status: emp.status === "active" ? "active" : emp.status === "inactive" ? "inactive" : "on-leave",
-          }))
-          setEmployees(transformedEmployees)
-        }
-      } catch (err) {
-        console.error("[v0] EmployeeManagementModule: Error fetching employees:", err)
-        setError("Failed to load employees")
-      } finally {
-        setIsLoading(false)
+  const fetchEmployees = useCallback(async () => {
+    try {
+      setIsLoading(true)
+      setError(null)
+      const response = await api.get<any[]>("/api/employees/")
+      if (response.error) {
+        setError(response.error)
+      } else if (response.data) {
+        setEmployees(response.data.map(mapApiEmployee))
       }
+    } catch (err) {
+      console.error("[v0] EmployeeManagementModule: Error fetching employees:", err)
+      setError("Failed to load employees")
+    } finally {
+      setIsLoading(false)
     }
-
-    fetchEmployees()
   }, [])
 
-  const [formData, setFormData] = useState({
-    name: "",
-    email: "",
-    phone: "",
-    department: "",
-    position: "",
-    employeeId: "",
-  })
+  useEffect(() => {
+    fetchEmployees()
+  }, [fetchEmployees])
+
+  const [formData, setFormData] = useState<EmployeeFormState>(createEmptyFormState())
+
+  const closeForm = () => {
+    setFormData(createEmptyFormState())
+    setEditingEmployeeId(null)
+    setShowForm(false)
+    setFormError(null)
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    console.log("[v0] EmployeeManagementModule: Submitting new employee", formData)
+    setFormError(null)
 
-    if (!formData.name || !formData.email || !formData.department || !formData.position || !formData.employeeId) {
-      console.log("[v0] EmployeeManagementModule: Form validation failed - missing required fields")
+    const trimmedName = formData.name.trim()
+    const trimmedEmail = formData.email.trim()
+    const trimmedDepartment = formData.department.trim()
+    const trimmedPosition = formData.position.trim()
+    const trimmedEmployeeId = formData.employeeId.trim()
+    const isEditing = Boolean(editingEmployeeId)
+
+    if (!trimmedName || !trimmedEmail || !trimmedDepartment || !trimmedPosition || !trimmedEmployeeId) {
+      setFormError("Please fill all required fields before submitting.")
       return
     }
 
+    const [firstName, ...lastNameParts] = trimmedName.split(/\s+/)
+    const lastName = lastNameParts.length > 0 ? lastNameParts.join(" ") : firstName
+
+    setIsSubmitting(true)
+
     try {
-      const [firstName, ...lastNameParts] = formData.name.split(" ")
-      const lastName = lastNameParts.join(" ") || firstName
-      
-      const response = await api.post<any>("/api/employees/", {
-        first_name: firstName,
-        last_name: lastName,
-        email: formData.email,
-        phone: formData.phone,
-        department: formData.department,
-        position: formData.position,
-        employee_id: formData.employeeId,
-        status: "active",
-      })
+      if (editingEmployeeId) {
+        const updatePayload = {
+          first_name: firstName,
+          last_name: lastName,
+          email: trimmedEmail,
+          phone: formData.phone.trim() || null,
+          department: trimmedDepartment,
+          position: trimmedPosition,
+          status: formData.status,
+        }
 
-      if (response.error) {
-        console.error("[v0] EmployeeManagementModule: Error creating employee:", response.error)
-        return
+        const response = await api.put(`/api/employees/${editingEmployeeId}`, updatePayload)
+        if (response.error) {
+          throw new Error(response.error)
+        }
+      } else {
+        const createPayload = {
+          first_name: firstName,
+          last_name: lastName,
+          email: trimmedEmail,
+          phone: formData.phone.trim() || null,
+          department: trimmedDepartment,
+          position: trimmedPosition,
+          employee_id: trimmedEmployeeId,
+          status: formData.status,
+        }
+
+        const response = await api.post("/api/employees/", createPayload)
+        if (response.error) {
+          throw new Error(response.error)
+        }
       }
 
-      // Refresh employee list
-      const fetchResponse = await api.get<any[]>("/api/employees/")
-      if (fetchResponse.data) {
-        const transformedEmployees = fetchResponse.data.map((emp: any) => ({
-          id: emp.id || emp.employee_id,
-          name: emp.first_name && emp.last_name 
-            ? `${emp.first_name} ${emp.last_name}` 
-            : emp.name || "Unknown",
-          email: emp.email,
-          phone: emp.phone || "",
-          department: emp.department || "Unknown",
-          position: emp.position || "Employee",
-          employeeId: emp.employee_id,
-          joinDate: emp.date_of_joining || new Date().toISOString().split("T")[0],
-          status: emp.status === "active" ? "active" : emp.status === "inactive" ? "inactive" : "on-leave",
-        }))
-        setEmployees(transformedEmployees)
-      }
-
-      setFormData({ name: "", email: "", phone: "", department: "", position: "", employeeId: "" })
-      setShowForm(false)
+      await fetchEmployees()
+      closeForm()
     } catch (err) {
-      console.error("[v0] EmployeeManagementModule: Error creating employee:", err)
+      console.error("[v0] EmployeeManagementModule: Error saving employee", err)
+      setFormError(err instanceof Error ? err.message : "Failed to save employee")
+    } finally {
+      setIsSubmitting(false)
     }
+  }
+
+  const handleEdit = (employee: Employee) => {
+    setFormData({
+      name: employee.name,
+      email: employee.email,
+      phone: employee.phone,
+      department: employee.department === "Unknown" ? "" : employee.department,
+      position: employee.position,
+      employeeId: employee.employeeId,
+      status: employee.status,
+    })
+    setEditingEmployeeId(employee.id)
+    setShowForm(true)
+    setFormError(null)
+  }
+
+  const handleAddEmployeeClick = () => {
+    if (!canAddEmployee) {
+      return
+    }
+
+    if (showForm && !editingEmployeeId) {
+      closeForm()
+      return
+    }
+
+    setFormData(createEmptyFormState())
+    setEditingEmployeeId(null)
+    setShowForm(true)
+    setFormError(null)
   }
 
   const handleDelete = async (id: string) => {
@@ -139,7 +217,10 @@ export default function EmployeeManagementModule({ onBack }: EmployeeManagementM
     try {
       const response = await api.delete(`/api/employees/${id}`)
       if (!response.error) {
-        setEmployees(employees.filter((e) => e.id !== id))
+        setEmployees((prev) => prev.filter((e) => e.id !== id))
+        if (editingEmployeeId === id) {
+          closeForm()
+        }
       }
     } catch (err) {
       console.error("[v0] EmployeeManagementModule: Error deleting employee:", err)
@@ -157,17 +238,32 @@ export default function EmployeeManagementModule({ onBack }: EmployeeManagementM
   })
 
   const departments = Array.from(new Set(employees.map((e) => e.department)))
+  const departmentOptions = Array.from(
+    new Set(
+      [...DEFAULT_DEPARTMENTS, ...departments, formData.department]
+        .filter((dept) => dept && dept !== "Unknown")
+        .map((dept) => dept)
+    )
+  )
 
   const getStatusColor = (status: string) => {
     switch (status) {
       case "active":
         return "bg-green-100 text-green-800"
+      case "inactive":
+        return "bg-red-100 text-red-800"
       case "on-leave":
         return "bg-yellow-100 text-yellow-800"
       default:
         return "bg-gray-100 text-gray-800"
     }
   }
+
+  const formatStatusLabel = (status: Employee["status"]) =>
+    status
+      .split("-")
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(" ")
 
   if (isLoading) {
     return (
@@ -201,7 +297,12 @@ export default function EmployeeManagementModule({ onBack }: EmployeeManagementM
           </Button>
           <h2 className="text-2xl font-bold text-foreground">Employee Management</h2>
         </div>
-        <Button onClick={() => setShowForm(!showForm)} variant="default">
+        <Button
+          onClick={handleAddEmployeeClick}
+          variant="default"
+          disabled={!canAddEmployee}
+          title={!canAddEmployee ? "Only Admin or HR can add employees" : undefined}
+        >
           <Plus size={18} className="mr-2" />
           Add Employee
         </Button>
@@ -211,10 +312,11 @@ export default function EmployeeManagementModule({ onBack }: EmployeeManagementM
       {showForm && (
         <Card className="bg-primary/5 border-primary/20">
           <CardHeader>
-            <CardTitle>Add New Employee</CardTitle>
+            <CardTitle>{editingEmployeeId ? "Update Employee" : "Add New Employee"}</CardTitle>
           </CardHeader>
           <CardContent>
             <form onSubmit={handleSubmit} className="space-y-4">
+              {formError && <p className="text-sm text-destructive">{formError}</p>}
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-1">Full Name</label>
@@ -224,6 +326,7 @@ export default function EmployeeManagementModule({ onBack }: EmployeeManagementM
                     value={formData.name}
                     onChange={(e) => setFormData({ ...formData, name: e.target.value })}
                     required
+                    disabled={isSubmitting}
                   />
                 </div>
                 <div>
@@ -234,7 +337,11 @@ export default function EmployeeManagementModule({ onBack }: EmployeeManagementM
                     value={formData.employeeId}
                     onChange={(e) => setFormData({ ...formData, employeeId: e.target.value })}
                     required
+                    disabled={!!editingEmployeeId || isSubmitting}
                   />
+                  {editingEmployeeId && (
+                    <p className="text-xs text-muted-foreground mt-1">Employee ID cannot be changed for existing records.</p>
+                  )}
                 </div>
               </div>
 
@@ -247,6 +354,7 @@ export default function EmployeeManagementModule({ onBack }: EmployeeManagementM
                     value={formData.email}
                     onChange={(e) => setFormData({ ...formData, email: e.target.value })}
                     required
+                    disabled={isSubmitting}
                   />
                 </div>
                 <div>
@@ -256,6 +364,7 @@ export default function EmployeeManagementModule({ onBack }: EmployeeManagementM
                     placeholder="555-0101"
                     value={formData.phone}
                     onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+                    disabled={isSubmitting}
                   />
                 </div>
               </div>
@@ -268,13 +377,14 @@ export default function EmployeeManagementModule({ onBack }: EmployeeManagementM
                     onChange={(e) => setFormData({ ...formData, department: e.target.value })}
                     className="w-full px-3 py-2 border border-border rounded-lg bg-background text-foreground"
                     required
+                    disabled={isSubmitting}
                   >
                     <option value="">Select Department</option>
-                    <option value="Engineering">Engineering</option>
-                    <option value="Marketing">Marketing</option>
-                    <option value="Sales">Sales</option>
-                    <option value="HR">HR</option>
-                    <option value="Finance">Finance</option>
+                    {departmentOptions.map((dept) => (
+                      <option key={dept} value={dept}>
+                        {dept}
+                      </option>
+                    ))}
                   </select>
                 </div>
                 <div>
@@ -285,15 +395,51 @@ export default function EmployeeManagementModule({ onBack }: EmployeeManagementM
                     value={formData.position}
                     onChange={(e) => setFormData({ ...formData, position: e.target.value })}
                     required
+                    disabled={isSubmitting}
                   />
                 </div>
               </div>
 
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">Employment Status</label>
+                  <select
+                    value={formData.status}
+                    onChange={(e) =>
+                      setFormData({ ...formData, status: e.target.value as Employee["status"] })
+                    }
+                    className="w-full px-3 py-2 border border-border rounded-lg bg-background text-foreground"
+                    disabled={isSubmitting}
+                  >
+                    {STATUS_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
               <div className="flex gap-2">
-                <Button type="submit" className="flex-1">
-                  Add Employee
+                <Button type="submit" className="flex-1" disabled={isSubmitting}>
+                  {isSubmitting ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Saving...
+                    </>
+                  ) : editingEmployeeId ? (
+                    "Save Changes"
+                  ) : (
+                    "Add Employee"
+                  )}
                 </Button>
-                <Button type="button" onClick={() => setShowForm(false)} variant="outline" className="flex-1">
+                <Button
+                  type="button"
+                  onClick={closeForm}
+                  variant="outline"
+                  className="flex-1"
+                  disabled={isSubmitting}
+                >
                   Cancel
                 </Button>
               </div>
@@ -357,12 +503,18 @@ export default function EmployeeManagementModule({ onBack }: EmployeeManagementM
                       <span className="text-xs bg-muted px-2 py-1 rounded">{employee.department}</span>
                       <span className="text-xs bg-muted px-2 py-1 rounded">{employee.position}</span>
                       <span className={`text-xs px-2 py-1 rounded ${getStatusColor(employee.status)}`}>
-                        {employee.status}
+                        {formatStatusLabel(employee.status)}
                       </span>
                     </div>
                   </div>
                   <div className="flex gap-2">
-                    <Button size="sm" variant="outline">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => handleEdit(employee)}
+                      disabled={!canAddEmployee}
+                      title={!canAddEmployee ? "Only Admin or HR can edit employees" : undefined}
+                    >
                       <Edit2 size={16} />
                     </Button>
                     <Button
@@ -370,6 +522,8 @@ export default function EmployeeManagementModule({ onBack }: EmployeeManagementM
                       variant="outline"
                       onClick={() => handleDelete(employee.id)}
                       className="text-destructive"
+                      disabled={!canAddEmployee}
+                      title={!canAddEmployee ? "Only Admin or HR can delete employees" : undefined}
                     >
                       <Trash2 size={16} />
                     </Button>

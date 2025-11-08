@@ -7,7 +7,7 @@ const router = express.Router()
 
 const JWT_SECRET = process.env.JWT_SECRET || "dev-secret"
 const VALID_ROLES = ["employee", "hr_officer", "payroll_officer", "admin"]
-
+const VALID_USER_STATUSES = new Set(["active", "inactive", "suspended"])
 if (!process.env.JWT_SECRET) {
   console.warn("[v0] Admin: JWT_SECRET not set. Using insecure default. Configure JWT_SECRET in the environment.")
 }
@@ -93,12 +93,13 @@ async function createEmployee(client, fullName, email, departmentId, position) {
         date_of_joining
       )
       VALUES ($1, $2, $3, $4, $5, $6, 'Full-time', 'active', $7)
-      RETURNING id;
+      RETURNING id, employee_id;
     `,
     [employeeCode, firstName, lastName, email.toLowerCase(), departmentId, position, joiningDate]
   )
 
-  return insert.rows[0].id
+  const row = insert.rows[0]
+  return { id: row.id, employeeCode: row.employee_id }
 }
 
 function mapUserRow(row) {
@@ -158,15 +159,23 @@ async function upsertSetting(client, key, value) {
     storedValue = JSON.stringify(value)
   }
 
-  await client.query(
-    `
-      INSERT INTO system_settings (setting_key, setting_value, data_type)
-      VALUES ($1, $2, $3)
-      ON CONFLICT (setting_key)
-      DO UPDATE SET setting_value = EXCLUDED.setting_value, data_type = EXCLUDED.data_type, updated_at = NOW();
-    `,
-    [key, storedValue, dataType]
-  )
+  try {
+    await client.query(
+      `
+        INSERT INTO system_settings (setting_key, setting_value, data_type)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (setting_key)
+        DO UPDATE SET setting_value = EXCLUDED.setting_value, data_type = EXCLUDED.data_type, updated_at = NOW();
+      `,
+      [key, storedValue, dataType]
+    )
+  } catch (error) {
+    if (error.code !== PG_UNDEFINED_TABLE) {
+      throw error
+    }
+
+    console.warn(`[v0] Admin: system_settings table missing while updating setting ${key}`)
+  }
 }
 
 router.use(requireAdmin)
@@ -198,7 +207,7 @@ router.get("/users", async (req, res) => {
       `
     )
 
-  const users = result.rows.map((row) => mapUserRow(row))
+    const users = result.rows.map((row) => mapUserRow(row))
     res.json({ users })
   } catch (error) {
     if (error.code === PG_UNDEFINED_TABLE) {
@@ -218,15 +227,17 @@ router.post("/users", async (req, res) => {
     return
   }
 
-  const { email, name, role = "employee", department = "General", password } = req.body
+  const { email, name, role = "employee", department = "General", status } = req.body
 
-  if (!email || !name || !password) {
-    return res.status(400).json({ detail: "Email, name, and password are required" })
+  if (!email || !name) {
+    return res.status(400).json({ detail: "Email and name are required" })
   }
 
   if (!VALID_ROLES.includes(role)) {
     return res.status(400).json({ detail: `Invalid role. Must be one of: ${VALID_ROLES.join(", ")}` })
   }
+
+  const normalizedStatus = status && VALID_USER_STATUSES.has(status) ? status : "active"
 
   try {
     const client = await pool.connect()
@@ -240,17 +251,23 @@ router.post("/users", async (req, res) => {
       }
 
       const departmentId = await ensureDepartment(client, department)
-      const employeeId = await createEmployee(client, name, email, departmentId, role === "admin" ? "Administrator" : role.replace("_", " "))
+      const employeeRecord = await createEmployee(
+        client,
+        name,
+        email,
+        departmentId,
+        role === "admin" ? "Administrator" : role.replace("_", " ")
+      )
 
-      const hashedPassword = bcrypt.hashSync(password, 10)
+      const hashedPassword = bcrypt.hashSync(employeeRecord.employeeCode, 10)
 
       const insert = await client.query(
         `
           INSERT INTO users (employee_id, email, password_hash, role, status)
-          VALUES ($1, $2, $3, $4, 'active')
+          VALUES ($1, $2, $3, $4, $5)
           RETURNING id;
         `,
-        [employeeId, email.toLowerCase(), hashedPassword, role]
+        [employeeRecord.id, email.toLowerCase(), hashedPassword, role, normalizedStatus]
       )
 
       const createdUser = await fetchUserWithDetailsById(client, insert.rows[0].id)
@@ -260,7 +277,7 @@ router.post("/users", async (req, res) => {
 
       await client.query("COMMIT")
 
-  res.json({ message: "User created successfully", user: mapUserRow(createdUser) })
+      res.json({ message: "User created successfully", user: mapUserRow(createdUser) })
     } catch (error) {
       await client.query("ROLLBACK")
 
@@ -269,13 +286,140 @@ router.post("/users", async (req, res) => {
       }
 
       console.error("[v0] Admin: Error creating user", error)
+      if (error.code === PG_UNDEFINED_TABLE) {
+        return res.status(500).json({ detail: "Database tables not initialized" })
+      }
+
       res.status(500).json({ detail: "Failed to create user" })
     } finally {
       client.release()
     }
   } catch (error) {
     console.error("[v0] Admin: Unexpected error creating user", error)
+    if (error.code === PG_UNDEFINED_TABLE) {
+      return res.status(500).json({ detail: "Database tables not initialized" })
+    }
+
     res.status(500).json({ detail: "Failed to create user" })
+  }
+})
+
+router.put("/users/:id", async (req, res) => {
+  const { id } = req.params
+  const { name, role, department, status, password } = req.body
+  console.log(`[v0] Admin: Updating user ${id}`)
+
+  if (!requireDatabase(res)) {
+    return
+  }
+
+  if ([name, role, department, status, password].every((value) => value === undefined)) {
+    return res.status(400).json({ detail: "No updatable fields provided" })
+  }
+
+  if (role && !VALID_ROLES.includes(role)) {
+    return res.status(400).json({ detail: `Invalid role. Must be one of: ${VALID_ROLES.join(", ")}` })
+  }
+
+  try {
+    const client = await pool.connect()
+    try {
+      await client.query("BEGIN")
+
+      const existing = await fetchUserWithDetailsById(client, id)
+      if (!existing) {
+        await client.query("ROLLBACK")
+        return res.status(404).json({ detail: "User not found" })
+      }
+
+      const userUpdates = []
+      const userParams = []
+
+      if (role && role !== existing.role) {
+        userParams.push(role)
+        userUpdates.push(`role = $${userParams.length}`)
+      }
+
+      if (status && status !== existing.status) {
+        if (!VALID_USER_STATUSES.has(status)) {
+          await client.query("ROLLBACK")
+          return res.status(400).json({ detail: "Invalid account status" })
+        }
+
+        userParams.push(status)
+        userUpdates.push(`status = $${userParams.length}`)
+      }
+
+      if (password) {
+        const hashedPassword = bcrypt.hashSync(password, 10)
+        userParams.push(hashedPassword)
+        userUpdates.push(`password_hash = $${userParams.length}`)
+      }
+
+      if (userUpdates.length > 0) {
+        userParams.push(id)
+        await client.query(
+          `
+            UPDATE users
+            SET ${userUpdates.join(", ")}, updated_at = NOW()
+            WHERE id = $${userParams.length};
+          `,
+          userParams
+        )
+      }
+
+      if (existing.employee_id) {
+        const employeeUpdates = []
+        const employeeParams = []
+
+        if (name) {
+          const { firstName, lastName } = splitName(name)
+          employeeParams.push(firstName)
+          employeeParams.push(lastName)
+          employeeUpdates.push(`first_name = $${employeeParams.length - 1}`)
+          employeeUpdates.push(`last_name = $${employeeParams.length}`)
+        }
+
+        if (department !== undefined) {
+          const departmentName = department?.trim()
+          if (!departmentName) {
+            await client.query("ROLLBACK")
+            return res.status(400).json({ detail: "Department cannot be empty" })
+          }
+
+          const departmentId = await ensureDepartment(client, departmentName)
+          employeeParams.push(departmentId)
+          employeeUpdates.push(`department_id = $${employeeParams.length}`)
+        }
+
+        if (employeeUpdates.length > 0) {
+          employeeParams.push(existing.employee_id)
+          await client.query(
+            `
+              UPDATE employees
+              SET ${employeeUpdates.join(", ")}, updated_at = NOW()
+              WHERE id = $${employeeParams.length};
+            `,
+            employeeParams
+          )
+        }
+      }
+
+      const refreshed = await fetchUserWithDetailsById(client, id)
+      await client.query("COMMIT")
+
+      res.json({ message: "User updated successfully", user: mapUserRow(refreshed) })
+    } catch (error) {
+      await client.query("ROLLBACK")
+
+      console.error(`[v0] Admin: Error updating user ${id}`, error)
+      res.status(500).json({ detail: "Failed to update user" })
+    } finally {
+      client.release()
+    }
+  } catch (error) {
+    console.error(`[v0] Admin: Unexpected error updating user ${id}`, error)
+    res.status(500).json({ detail: "Failed to update user" })
   }
 })
 

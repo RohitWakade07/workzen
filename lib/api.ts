@@ -4,6 +4,12 @@
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
 
+let authToken: string | null = null
+
+export function setAuthToken(token: string | null) {
+  authToken = token
+}
+
 export interface ApiResponse<T> {
   data?: T
   error?: string
@@ -20,6 +26,10 @@ async function apiRequest<T>(
     const method = (options.method || "GET").toUpperCase()
     const headers: Record<string, string> = {
       ...(options.headers as Record<string, string> | undefined),
+    }
+
+    if (authToken && !headers.Authorization) {
+      headers.Authorization = `Bearer ${authToken}`
     }
     if (method !== "GET" && method !== "HEAD") {
       headers["Content-Type"] = "application/json"

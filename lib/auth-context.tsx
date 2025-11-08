@@ -2,12 +2,14 @@
 
 import { createContext, useContext, useState, useEffect, type ReactNode } from "react"
 
+import { api, setAuthToken } from "@/lib/api"
+
 export type UserRole = "employee" | "hr_officer" | "payroll_officer" | "admin"
 
 export interface User {
   id: string
   email: string
-  name: string
+  name?: string
   role: UserRole
   department?: string
   employeeId?: string
@@ -33,15 +35,38 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
 
+interface AuthApiResponse {
+  access_token: string
+  token_type: string
+  user: Record<string, unknown>
+  expires_in: number
+}
+
+const AUTH_TOKEN_KEY = "auth_token"
+const AUTH_USER_KEY = "auth_user"
+
+function isBrowser() {
+  return typeof window !== "undefined"
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  // Initialize from localStorage on mount
   useEffect(() => {
     try {
-      const storedUser = localStorage.getItem("auth_user")
+      if (!isBrowser()) {
+        return
+      }
+
+      const storedToken = localStorage.getItem(AUTH_TOKEN_KEY)
+      const storedUser = localStorage.getItem(AUTH_USER_KEY)
+
+      if (storedToken) {
+        setAuthToken(storedToken)
+      }
+
       if (storedUser) {
         console.log("[v0] Auth: Restoring user from localStorage")
         setUser(JSON.parse(storedUser))
@@ -53,61 +78,62 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  const persistSession = (token: string, nextUser: User) => {
+    setAuthToken(token)
+    setUser(nextUser)
+
+    if (isBrowser()) {
+      localStorage.setItem(AUTH_TOKEN_KEY, token)
+      localStorage.setItem(AUTH_USER_KEY, JSON.stringify(nextUser))
+    }
+  }
+
+  const clearSession = () => {
+    setAuthToken(null)
+    setUser(null)
+
+    if (isBrowser()) {
+      localStorage.removeItem(AUTH_TOKEN_KEY)
+      localStorage.removeItem(AUTH_USER_KEY)
+    }
+  }
+
+  const mapApiUserToUser = (apiUser: Record<string, unknown>): User => {
+    const role = (apiUser.role as UserRole) || "employee"
+    const fullName = (apiUser.name as string) || (apiUser.fullName as string) || (apiUser.displayName as string) || ""
+
+    return {
+      id: (apiUser.id as string) || "",
+      email: (apiUser.email as string) || "",
+      name: fullName || (apiUser.email as string) || "",
+      role,
+      department: (apiUser.department as string | undefined) ?? undefined,
+      employeeId: (apiUser.employeeId as string | undefined) ?? (apiUser.employee_id as string | undefined) ?? undefined,
+      companyName: (apiUser.companyName as string | undefined) ?? undefined,
+      phone: (apiUser.phone as string | undefined) ?? undefined,
+      companyLogo: (apiUser.companyLogo as string | null | undefined) ?? null,
+    }
+  }
+
   const login = async (email: string, password: string) => {
     try {
       setError(null)
       setIsLoading(true)
       console.log("[v0] Auth: Starting login for", email)
 
-      if (email === "admin@test.com" && password === "password") {
-        const mockUser: User = {
-          id: "admin_001",
-          email,
-          name: "Admin User",
-          role: "admin",
-          companyName: "Test Company",
-          phone: "+1 (555) 000-0001",
-        }
-        setUser(mockUser)
-        localStorage.setItem("auth_user", JSON.stringify(mockUser))
-        console.log("[v0] Auth: Admin login successful (mock)")
-      } else if (email === "hr@test.com" && password === "password") {
-        const mockUser: User = {
-          id: "hr_001",
-          email,
-          name: "Jane HR",
-          role: "hr_officer",
-          department: "Human Resources",
-        }
-        setUser(mockUser)
-        localStorage.setItem("auth_user", JSON.stringify(mockUser))
-        console.log("[v0] Auth: Login successful (mock)")
-      } else if (email === "payroll@test.com" && password === "password") {
-        const mockUser: User = {
-          id: "payroll_001",
-          email,
-          name: "Bob Payroll",
-          role: "payroll_officer",
-          department: "Payroll",
-        }
-        setUser(mockUser)
-        localStorage.setItem("auth_user", JSON.stringify(mockUser))
-        console.log("[v0] Auth: Login successful (mock)")
-      } else if (email === "employee@test.com" && password === "password") {
-        const mockUser: User = {
-          id: "emp_001",
-          email,
-          name: "John Employee",
-          role: "employee",
-          employeeId: "EMP001",
-          department: "Engineering",
-        }
-        setUser(mockUser)
-        localStorage.setItem("auth_user", JSON.stringify(mockUser))
-        console.log("[v0] Auth: Login successful (mock)")
-      } else {
-        throw new Error("Invalid credentials")
+      const response = await api.post<AuthApiResponse>("/api/auth/login", { email, password })
+
+      if (response.error) {
+        throw new Error(response.error)
       }
+
+      if (!response.data?.access_token || !response.data.user) {
+        throw new Error("Invalid login response from server")
+      }
+
+      const nextUser = mapApiUserToUser(response.data.user)
+      persistSession(response.data.access_token, nextUser)
+      console.log("[v0] Auth: Login successful via API for", email)
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : "Login failed"
       console.log("[v0] Auth: Login error -", errorMsg)
@@ -124,31 +150,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setIsLoading(true)
       console.log("[v0] Auth: Starting signup for", email, "with role", role)
 
-      if (role !== "admin") {
-        throw new Error("Only admin accounts can be created. Other users must be added by admin.")
-      }
-
-      if (!companyData) {
-        throw new Error("Company data is required for admin signup")
-      }
-
-      // Validate company data
-      if (!companyData.companyName || !companyData.phone) {
-        throw new Error("Company name and phone are required")
-      }
-
-      const newUser: User = {
-        id: `admin_${Date.now()}`,
+      const payload: Record<string, unknown> = {
         email,
+        password,
         name,
-        role: "admin",
-        companyName: companyData.companyName,
-        phone: companyData.phone,
-        companyLogo: companyData.companyLogo || null,
+        role,
       }
-      setUser(newUser)
-      localStorage.setItem("auth_user", JSON.stringify(newUser))
-      console.log("[v0] Auth: Admin signup successful (mock) for company", companyData.companyName)
+
+      if (companyData) {
+        payload.company = companyData
+      }
+
+      const response = await api.post<AuthApiResponse>("/api/auth/signup", payload)
+
+      if (response.error) {
+        throw new Error(response.error)
+      }
+
+      if (!response.data?.access_token || !response.data.user) {
+        throw new Error("Invalid signup response from server")
+      }
+
+      const nextUser = mapApiUserToUser(response.data.user)
+      persistSession(response.data.access_token, nextUser)
+      console.log("[v0] Auth: Signup successful via API for", email)
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : "Signup failed"
       console.log("[v0] Auth: Signup error -", errorMsg)
@@ -161,9 +186,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = () => {
     console.log("[v0] Auth: Logout initiated")
-    setUser(null)
-    localStorage.removeItem("auth_user")
-    // Redirect will be handled by the component using logout
+    clearSession()
+    void api.post("/api/auth/logout")
   }
 
   return (

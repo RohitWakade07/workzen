@@ -13,6 +13,7 @@ dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 8000;
+const JSON_BODY_LIMIT = process.env.JSON_BODY_LIMIT || "5mb";
 
 // Middleware
 app.use(cors({
@@ -24,8 +25,9 @@ app.use(cors({
   ],
   credentials: true
 }));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// Allow slightly larger payloads (e.g., logo uploads encoded as base64)
+app.use(express.json({ limit: JSON_BODY_LIMIT }));
+app.use(express.urlencoded({ extended: true, limit: JSON_BODY_LIMIT }));
 
 // Logging middleware
 app.use((req, res, next) => {

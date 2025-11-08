@@ -7,6 +7,9 @@ import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Search, UserPlus, Plane, AlertCircle, Loader2 } from "lucide-react"
 import { api } from "@/lib/api"
+import { Empty, EmptyHeader, EmptyTitle, EmptyDescription, EmptyContent, EmptyMedia } from "@/components/ui/empty"
+import EmployeeManagementModule from "@/components/hr/employee-management-module"
+import { useAuth } from "@/lib/auth-context"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 
 interface Employee {
@@ -24,63 +27,64 @@ interface Employee {
 }
 
 export default function EmployeesPage() {
+  const { user } = useAuth()
+  const canAddEmployee = !!user && (user.role === "admin" || user.role === "hr_officer")
   const [employees, setEmployees] = useState<Employee[]>([])
   const [searchTerm, setSearchTerm] = useState("")
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [showAddForm, setShowAddForm] = useState(false)
 
-  // Fetch employees from API
-  useEffect(() => {
-    const fetchEmployees = async () => {
-      try {
-        setIsLoading(true)
-        setError(null)
-        console.log("[v0] EmployeesPage: Fetching employees from API")
-        
-        const response = await api.get<any[]>("/api/employees/")
-        
-        if (response.error) {
-          setError(response.error)
-          console.error("[v0] EmployeesPage: Error fetching employees:", response.error)
-        } else if (response.data) {
-          // Transform backend data to frontend format
-          const transformedEmployees = response.data.map((emp: any) => ({
-            id: emp.id || emp.employee_id,
-            employee_id: emp.employee_id,
-            name: emp.first_name && emp.last_name 
-              ? `${emp.first_name} ${emp.last_name}` 
-              : emp.name || emp.email?.split("@")[0] || "Unknown",
-            email: emp.email,
-            department: emp.department || "Unknown",
-            position: emp.position || "Employee",
-            status: emp.status === "active" ? "present" : emp.status === "inactive" ? "absent" : "on_leave",
-            avatar: emp.first_name && emp.last_name
-              ? `${emp.first_name[0]}${emp.last_name[0]}`.toUpperCase()
-              : emp.name?.split(" ").map((n: string) => n[0]).join("").toUpperCase() || "??",
-            checkInTime: undefined, // Will be populated from attendance data if available
-          }))
-          
-          setEmployees(transformedEmployees)
-          console.log(`[v0] EmployeesPage: Loaded ${transformedEmployees.length} employees`)
-        }
-      } catch (err) {
-        console.error("[v0] EmployeesPage: Error fetching employees:", err)
-        setError("Failed to load employees")
-      } finally {
-        setIsLoading(false)
+  // Fetch employees from API (exposed so we can re-run after adding)
+  const fetchEmployees = async () => {
+    try {
+      setIsLoading(true)
+      setError(null)
+      console.log("[v0] EmployeesPage: Fetching employees from API")
+
+      const response = await api.get<any[]>("/api/employees/")
+
+      if (response.error) {
+        setError(response.error)
+        console.error("[v0] EmployeesPage: Error fetching employees:", response.error)
+      } else if (response.data) {
+        // Transform backend data to frontend format
+        const transformedEmployees: Employee[] = response.data.map((emp: any) => ({
+          id: emp.id || emp.employee_id,
+          employee_id: emp.employee_id,
+          name: emp.first_name && emp.last_name ? `${emp.first_name} ${emp.last_name}` : emp.name || emp.email?.split("@")[0] || "Unknown",
+          email: emp.email,
+          department: emp.department || "Unknown",
+          position: emp.position || "Employee",
+          // Map backend status into our frontend union
+          status: (emp.status === "active" ? "present" : emp.status === "inactive" ? "absent" : "on_leave") as Employee["status"],
+          avatar: emp.first_name && emp.last_name ? `${emp.first_name[0]}${emp.last_name[0]}`.toUpperCase() : emp.name?.split(" ").map((n: string) => n[0]).join("").toUpperCase() || "??",
+          checkInTime: undefined,
+        }))
+
+        setEmployees(transformedEmployees)
+        console.log(`[v0] EmployeesPage: Loaded ${transformedEmployees.length} employees`)
       }
+    } catch (err) {
+      console.error("[v0] EmployeesPage: Error fetching employees:", err)
+      setError("Failed to load employees")
+    } finally {
+      setIsLoading(false)
     }
+  }
 
+  useEffect(() => {
     fetchEmployees()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   console.log("[v0] EmployeesPage: Rendered with", employees.length, "employees")
 
   const filteredEmployees = employees.filter(
     (emp) =>
-      emp.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      emp.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      emp.department.toLowerCase().includes(searchTerm.toLowerCase()),
+      (emp.name || "").toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (emp.email || "").toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (emp.department || "").toLowerCase().includes(searchTerm.toLowerCase()),
   )
 
   const getStatusIndicator = (status: string) => {
@@ -88,7 +92,11 @@ export default function EmployeesPage() {
       case "present":
         return <div className="w-3 h-3 rounded-full bg-green-500" title="Present" />
       case "on_leave":
-        return <Plane className="w-3 h-3 text-blue-500" title="On Leave" />
+        return (
+          <span title="On Leave">
+            <Plane className="w-3 h-3 text-blue-500" />
+          </span>
+        )
       case "absent":
         return <div className="w-3 h-3 rounded-full bg-yellow-500" title="Absent" />
       default:
@@ -115,7 +123,12 @@ export default function EmployeesPage() {
           <h1 className="text-3xl font-bold text-foreground">Employees</h1>
           <p className="text-muted-foreground mt-1">Manage all employees and view their status</p>
         </div>
-        <Button className="gap-2">
+        <Button
+          className="gap-2"
+          disabled={!canAddEmployee}
+          title={!canAddEmployee ? "Only Admin or HR can add employees" : undefined}
+          onClick={() => canAddEmployee && setShowAddForm(true)}
+        >
           <UserPlus size={20} />
           Add Employee
         </Button>
@@ -126,6 +139,15 @@ export default function EmployeesPage() {
           <AlertCircle className="h-4 w-4" />
           <AlertDescription>{error}</AlertDescription>
         </Alert>
+      )}
+
+      {showAddForm && (
+        <EmployeeManagementModule
+          onBack={() => {
+            setShowAddForm(false)
+            fetchEmployees()
+          }}
+        />
       )}
 
       {/* Search */}
@@ -186,7 +208,27 @@ export default function EmployeesPage() {
 
       {filteredEmployees.length === 0 && (
         <div className="text-center py-12">
-          <p className="text-muted-foreground">No employees found matching your search</p>
+          {searchTerm ? (
+            <p className="text-muted-foreground">No employees found matching your search</p>
+          ) : (
+            <Empty>
+              <EmptyHeader>
+                <EmptyMedia variant="icon">
+                  <UserPlus />
+                </EmptyMedia>
+                <EmptyTitle>No employees yet</EmptyTitle>
+                <EmptyDescription>
+                  There are no employees in the database. You can add your first employee now.
+                </EmptyDescription>
+              </EmptyHeader>
+              <EmptyContent>
+                <Button onClick={() => (canAddEmployee ? setShowAddForm(true) : null)} disabled={!canAddEmployee}>
+                  Add Employee
+                </Button>
+                {!canAddEmployee && <p className="text-sm text-muted-foreground">Only Admin or HR can add employees</p>}
+              </EmptyContent>
+            </Empty>
+          )}
         </div>
       )}
     </div>
