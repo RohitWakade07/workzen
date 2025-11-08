@@ -20,6 +20,7 @@ async function ensureUserSchema(client) {
       `
         ALTER TABLE users
         ADD COLUMN IF NOT EXISTS employee_id UUID,
+        ADD COLUMN IF NOT EXISTS company_id UUID,
         ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active',
         ADD COLUMN IF NOT EXISTS last_login TIMESTAMP,
         ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -28,6 +29,12 @@ async function ensureUserSchema(client) {
     )
 
     await client.query(`UPDATE users SET status = 'active' WHERE status IS NULL`)
+
+    const unassignedCompanies = await client.query(`SELECT COUNT(1) AS count FROM users WHERE company_id IS NULL`)
+    const missingCount = Number(unassignedCompanies.rows?.[0]?.count ?? 0)
+    if (missingCount > 0) {
+      console.warn(`[v0] Auth: ${missingCount} user(s) missing company_id. Assign appropriate company ids.`)
+    }
   } catch (error) {
     if (error.code === PG_UNDEFINED_TABLE) {
       console.warn("[v0] Auth: users table missing while ensuring schema")
@@ -38,34 +45,50 @@ async function ensureUserSchema(client) {
   }
 }
 
-async function resetCompanyData(client) {
-  const tablesInOrder = [
-    "audit_logs",
-    "payroll_approvals",
-    "payroll_entries",
-    "payruns",
-    "leave_approvals",
-    "time_off_requests",
-    "attendance_records",
-    "leave_allocations",
-    "employee_salary",
-    "employee_profiles",
-    "users",
-    "employees",
-    "departments",
-    "system_settings",
-  ]
+async function ensureEmployeeSchema(client) {
+  if (!client) {
+    return
+  }
 
-  for (const table of tablesInOrder) {
+  try {
     try {
-      await client.query(`TRUNCATE TABLE ${table} RESTART IDENTITY CASCADE;`)
+      await client.query("ALTER TABLE employees DROP COLUMN IF EXISTS user_id CASCADE")
     } catch (error) {
-      if (error.code !== PG_UNDEFINED_TABLE) {
+      if (error.code !== PG_UNDEFINED_COLUMN && error.code !== PG_UNDEFINED_TABLE) {
         throw error
       }
-      console.warn(`[v0] Auth: Skipped truncating ${table} because it does not exist yet`)
     }
+
+    await client.query(
+      `
+        ALTER TABLE employees
+        ADD COLUMN IF NOT EXISTS first_name VARCHAR(100),
+        ADD COLUMN IF NOT EXISTS last_name VARCHAR(100),
+        ADD COLUMN IF NOT EXISTS email VARCHAR(255),
+        ADD COLUMN IF NOT EXISTS phone VARCHAR(50),
+        ADD COLUMN IF NOT EXISTS department_id UUID,
+        ADD COLUMN IF NOT EXISTS position VARCHAR(100) DEFAULT 'Employee',
+        ADD COLUMN IF NOT EXISTS employment_type VARCHAR(20) DEFAULT 'Full-time',
+        ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active',
+        ADD COLUMN IF NOT EXISTS date_of_joining DATE,
+        ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      `
+    )
+
+    await client.query(`UPDATE employees SET employment_type = 'Full-time' WHERE employment_type IS NULL`)
+    await client.query(`UPDATE employees SET status = 'active' WHERE status IS NULL`)
+  } catch (error) {
+    if (error.code === PG_UNDEFINED_TABLE) {
+      console.warn("[v0] Auth: employees table missing while ensuring schema")
+      return
+    }
+
+    throw error
   }
+}
+
+async function resetCompanyData(client) {
+  console.log("[v0] Auth: resetCompanyData skipped (table truncation disabled)")
 }
 
 if (!process.env.JWT_SECRET) {
@@ -280,6 +303,7 @@ router.post("/signup", async (req, res) => {
     await client.query("BEGIN")
 
   await ensureUserSchema(client)
+  await ensureEmployeeSchema(client)
 
     console.log("[v0] Signup: Resetting company data for new account")
     await resetCompanyData(client)

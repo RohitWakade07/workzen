@@ -58,7 +58,7 @@ export default function DashboardLayout() {
   const renderPage = () => {
     // Employees page (admin only)
     if (pathname === "/employees") {
-      if (user.role === "admin") {
+      if (user.role === "admin" || user.role === "hr_officer" || user.role === "payroll_officer") {
         return <EmployeesGrid />
       }
       return <div className="text-center py-8">You don't have access to this page</div>
@@ -96,7 +96,7 @@ export default function DashboardLayout() {
     // Payslips (employee view)
     if (pathname === "/payslips") {
       if (user.role === "employee") {
-        return <EmployeePayslips />
+        return <EmployeePayslips onBack={() => router.push("/")} />
       }
       return <div className="text-center py-8">You don't have access to this page</div>
     }

@@ -1,6 +1,7 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, FormEvent } from "react"
+import { useSearchParams } from "next/navigation"
 import { useAuth } from "@/lib/auth-context"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -45,11 +46,21 @@ interface ProfileData {
 
 export default function ProfilePage() {
   const { user } = useAuth()
+  const searchParams = useSearchParams()
   const [activeTab, setActiveTab] = useState("resume")
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
+  const [newSkill, setNewSkill] = useState("")
+  const [newCertification, setNewCertification] = useState("")
+
+  const loggedInEmployeeId = user?.employeeId || user?.id || ""
+  const employeeIdParam = searchParams.get("employeeId") || ""
+  const profileEmployeeId = employeeIdParam || loggedInEmployeeId
+  const isViewingOtherEmployee = Boolean(employeeIdParam && employeeIdParam !== loggedInEmployeeId)
+  const canEdit = isViewingOtherEmployee ? user?.role === "admin" : !!user
+  const isReadOnly = !canEdit
 
   // Profile data state
   const [profileData, setProfileData] = useState<ProfileData>({
@@ -78,11 +89,11 @@ export default function ProfilePage() {
     ifscCode: "",
     panNo: "",
     uanNo: "",
-    empCode: user?.employeeId || user?.id || "",
+    empCode: profileEmployeeId || user?.employeeId || user?.id || "",
   })
 
   // Get employee ID - use employeeId if available, otherwise use user id
-  const employeeId = user?.employeeId || user?.id || ""
+  const employeeId = profileEmployeeId
 
   // Fetch profile data on mount
   useEffect(() => {
@@ -95,30 +106,36 @@ export default function ProfilePage() {
       try {
         setIsLoading(true)
         setError(null)
+
         const response = await api.get<any>(`/api/employees/${employeeId}/profile`)
 
         if (response.error) {
           setError(response.error)
-          // Initialize with user data if API fails
           setProfileData((prev) => ({
             ...prev,
-            name: user?.name || "",
-            email: user?.email || "",
-            loginId: user?.email || "",
-            mobile: user?.phone || "",
-            company: user?.companyName || "",
-            department: user?.department || "",
-            empCode: user?.employeeId || user?.id || "",
+            name: isViewingOtherEmployee ? "" : user?.name || "",
+            email: isViewingOtherEmployee ? "" : user?.email || "",
+            loginId: isViewingOtherEmployee ? "" : user?.email || "",
+            mobile: isViewingOtherEmployee ? "" : user?.phone || "",
+            company: isViewingOtherEmployee ? "" : user?.companyName || "",
+            department: isViewingOtherEmployee ? "" : user?.department || "",
+            empCode: profileEmployeeId || (isViewingOtherEmployee ? profileEmployeeId : user?.employeeId || user?.id || ""),
           }))
         } else if (response.data) {
           const data = response.data
+          const fallbackName = isViewingOtherEmployee ? "" : user?.name || ""
+          const fallbackEmail = isViewingOtherEmployee ? "" : user?.email || ""
+          const fallbackPhone = isViewingOtherEmployee ? "" : user?.phone || ""
+          const fallbackCompany = isViewingOtherEmployee ? "" : user?.companyName || ""
+          const fallbackDepartment = isViewingOtherEmployee ? "" : user?.department || ""
+          const fallbackEmpCode = profileEmployeeId || (isViewingOtherEmployee ? profileEmployeeId : user?.employeeId || user?.id || "")
           setProfileData({
-            name: data.name || user?.name || "",
-            loginId: data.email || user?.email || "",
-            email: data.email || user?.email || "",
-            mobile: data.mobile || user?.phone || "",
-            company: data.company || user?.companyName || "",
-            department: data.department || user?.department || "",
+            name: data.name || fallbackName,
+            loginId: data.email || fallbackEmail,
+            email: data.email || fallbackEmail,
+            mobile: data.mobile || fallbackPhone,
+            company: data.company || fallbackCompany,
+            department: data.department || fallbackDepartment,
             manager: data.manager || "",
             location: data.location || "",
             about: data.about || data.job_love || "",
@@ -138,7 +155,7 @@ export default function ProfilePage() {
             ifscCode: data.ifsc_code || "",
             panNo: data.pan_no || "",
             uanNo: data.uan_no || "",
-            empCode: data.emp_code || user?.employeeId || user?.id || "",
+            empCode: data.emp_code || fallbackEmpCode,
           })
         }
       } catch (err) {
@@ -150,49 +167,85 @@ export default function ProfilePage() {
     }
 
     fetchProfile()
-  }, [employeeId, user])
+  }, [employeeId, profileEmployeeId, user])
 
   const handleInputChange = (field: keyof ProfileData, value: string) => {
+    if (isReadOnly) {
+      return
+    }
     setProfileData((prev) => ({ ...prev, [field]: value }))
     setSuccessMessage(null)
     setError(null)
   }
 
   const handleAddSkill = () => {
-    const skill = prompt("Enter skill name:")
-    if (skill && skill.trim()) {
-      setProfileData((prev) => ({
-        ...prev,
-        skills: [...prev.skills, skill.trim()],
-      }))
+    if (isReadOnly) {
+      return
     }
+
+    const trimmed = newSkill.trim()
+    if (!trimmed) {
+      return
+    }
+
+    setProfileData((prev) => ({
+      ...prev,
+      skills: [...prev.skills, trimmed],
+    }))
+    setNewSkill("")
   }
 
   const handleRemoveSkill = (index: number) => {
+    if (isReadOnly) {
+      return
+    }
     setProfileData((prev) => ({
       ...prev,
       skills: prev.skills.filter((_, i) => i !== index),
     }))
   }
 
+  const handleSkillSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    handleAddSkill()
+  }
+
   const handleAddCertification = () => {
-    const cert = prompt("Enter certification name:")
-    if (cert && cert.trim()) {
-      setProfileData((prev) => ({
-        ...prev,
-        certifications: [...prev.certifications, cert.trim()],
-      }))
+    if (isReadOnly) {
+      return
     }
+
+    const trimmed = newCertification.trim()
+    if (!trimmed) {
+      return
+    }
+
+    setProfileData((prev) => ({
+      ...prev,
+      certifications: [...prev.certifications, trimmed],
+    }))
+    setNewCertification("")
   }
 
   const handleRemoveCertification = (index: number) => {
+    if (isReadOnly) {
+      return
+    }
     setProfileData((prev) => ({
       ...prev,
       certifications: prev.certifications.filter((_, i) => i !== index),
     }))
   }
 
+  const handleCertificationSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    handleAddCertification()
+  }
+
   const handleSaveProfile = async () => {
+    if (isReadOnly) {
+      return
+    }
     if (!employeeId) {
       setError("Employee ID is required")
       return
@@ -262,19 +315,23 @@ export default function ProfilePage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-3xl font-bold text-foreground">My Profile</h1>
-        <Button onClick={handleSaveProfile} disabled={isSaving}>
-          {isSaving ? (
-            <>
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              Saving...
-            </>
-          ) : (
-            <>
-              <Save className="mr-2 h-4 w-4" />
-              Save Changes
-            </>
-          )}
-        </Button>
+        {canEdit ? (
+          <Button onClick={handleSaveProfile} disabled={isSaving}>
+            {isSaving ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Saving...
+              </>
+            ) : (
+              <>
+                <Save className="mr-2 h-4 w-4" />
+                Save Changes
+              </>
+            )}
+          </Button>
+        ) : (
+          <span className="text-sm text-muted-foreground">Read-only view</span>
+        )}
       </div>
 
       {error && (
@@ -316,7 +373,10 @@ export default function ProfilePage() {
                             .toUpperCase()}
                         </AvatarFallback>
                       </Avatar>
-                      <button className="absolute bottom-0 right-0 p-1.5 bg-primary text-primary-foreground rounded-full hover:bg-primary/90 transition-colors">
+                      <button
+                        className="absolute bottom-0 right-0 p-1.5 bg-primary text-primary-foreground rounded-full hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        disabled={isReadOnly}
+                      >
                         <Pencil size={14} />
                       </button>
                     </div>
@@ -328,6 +388,7 @@ export default function ProfilePage() {
                           value={profileData.name}
                           onChange={(e) => handleInputChange("name", e.target.value)}
                           className="mt-1"
+                          disabled={isReadOnly}
                         />
                       </div>
                       <div>
@@ -337,6 +398,7 @@ export default function ProfilePage() {
                           value={profileData.loginId}
                           onChange={(e) => handleInputChange("loginId", e.target.value)}
                           className="mt-1"
+                          disabled={isReadOnly}
                         />
                       </div>
                       <div>
@@ -347,6 +409,7 @@ export default function ProfilePage() {
                           value={profileData.email}
                           onChange={(e) => handleInputChange("email", e.target.value)}
                           className="mt-1"
+                          disabled={isReadOnly}
                         />
                       </div>
                       <div>
@@ -356,6 +419,7 @@ export default function ProfilePage() {
                           value={profileData.mobile}
                           onChange={(e) => handleInputChange("mobile", e.target.value)}
                           className="mt-1"
+                          disabled={isReadOnly}
                         />
                       </div>
                     </div>
@@ -376,6 +440,7 @@ export default function ProfilePage() {
                       value={profileData.company}
                       onChange={(e) => handleInputChange("company", e.target.value)}
                       className="mt-1"
+                      disabled={isReadOnly}
                     />
                   </div>
                   <div>
@@ -385,6 +450,7 @@ export default function ProfilePage() {
                       value={profileData.department}
                       onChange={(e) => handleInputChange("department", e.target.value)}
                       className="mt-1"
+                      disabled={isReadOnly}
                     />
                   </div>
                   <div>
@@ -394,6 +460,7 @@ export default function ProfilePage() {
                       value={profileData.manager}
                       onChange={(e) => handleInputChange("manager", e.target.value)}
                       className="mt-1"
+                      disabled={isReadOnly}
                     />
                   </div>
                   <div>
@@ -403,6 +470,7 @@ export default function ProfilePage() {
                       value={profileData.location}
                       onChange={(e) => handleInputChange("location", e.target.value)}
                       className="mt-1"
+                      disabled={isReadOnly}
                     />
                   </div>
                 </CardContent>
@@ -419,6 +487,7 @@ export default function ProfilePage() {
                     onChange={(e) => handleInputChange("about", e.target.value)}
                     placeholder="Tell us about yourself..."
                     className="min-h-32"
+                    disabled={isReadOnly}
                   />
                 </CardContent>
               </Card>
@@ -434,6 +503,7 @@ export default function ProfilePage() {
                     onChange={(e) => handleInputChange("jobLove", e.target.value)}
                     placeholder="Share what you love about your job..."
                     className="min-h-32"
+                    disabled={isReadOnly}
                   />
                 </CardContent>
               </Card>
@@ -449,6 +519,7 @@ export default function ProfilePage() {
                     onChange={(e) => handleInputChange("interests", e.target.value)}
                     placeholder="Share your interests and hobbies..."
                     className="min-h-32"
+                    disabled={isReadOnly}
                   />
                 </CardContent>
               </Card>
@@ -475,8 +546,9 @@ export default function ProfilePage() {
                             {skill}
                             <button
                               onClick={() => handleRemoveSkill(index)}
-                              className="hover:text-destructive"
+                              className="hover:text-destructive disabled:opacity-50 disabled:cursor-not-allowed"
                               type="button"
+                              disabled={isReadOnly}
                             >
                               ×
                             </button>
@@ -485,10 +557,18 @@ export default function ProfilePage() {
                       </div>
                     )}
                   </div>
-                  <Button variant="outline" onClick={handleAddSkill} className="mt-4 w-full">
-                    <Plus size={16} className="mr-2" />
-                    Add Skills
-                  </Button>
+                  <form onSubmit={handleSkillSubmit} className="mt-4 flex gap-2">
+                    <Input
+                      placeholder="Add a skill"
+                      value={newSkill}
+                      onChange={(event) => setNewSkill(event.target.value)}
+                      disabled={isReadOnly}
+                    />
+                    <Button type="submit" variant="outline" disabled={isReadOnly || !newSkill.trim()}>
+                      <Plus size={16} className="mr-2" />
+                      Add
+                    </Button>
+                  </form>
                 </CardContent>
               </Card>
 
@@ -511,8 +591,9 @@ export default function ProfilePage() {
                             {cert}
                             <button
                               onClick={() => handleRemoveCertification(index)}
-                              className="hover:text-destructive"
+                              className="hover:text-destructive disabled:opacity-50 disabled:cursor-not-allowed"
                               type="button"
+                              disabled={isReadOnly}
                             >
                               ×
                             </button>
@@ -521,10 +602,18 @@ export default function ProfilePage() {
                       </div>
                     )}
                   </div>
-                  <Button variant="outline" onClick={handleAddCertification} className="mt-4 w-full">
-                    <Plus size={16} className="mr-2" />
-                    Add Certification
-                  </Button>
+                  <form onSubmit={handleCertificationSubmit} className="mt-4 flex gap-2">
+                    <Input
+                      placeholder="Add a certification"
+                      value={newCertification}
+                      onChange={(event) => setNewCertification(event.target.value)}
+                      disabled={isReadOnly}
+                    />
+                    <Button type="submit" variant="outline" disabled={isReadOnly || !newCertification.trim()}>
+                      <Plus size={16} className="mr-2" />
+                      Add
+                    </Button>
+                  </form>
                 </CardContent>
               </Card>
             </div>
@@ -546,6 +635,7 @@ export default function ProfilePage() {
                     value={profileData.dateOfBirth}
                     onChange={(e) => handleInputChange("dateOfBirth", e.target.value)}
                     className="mt-1"
+                    disabled={isReadOnly}
                   />
                 </div>
                 <div>
@@ -555,6 +645,7 @@ export default function ProfilePage() {
                     value={profileData.gender}
                     onChange={(e) => handleInputChange("gender", e.target.value)}
                     className="mt-1"
+                    disabled={isReadOnly}
                   />
                 </div>
                 <div>
@@ -564,6 +655,7 @@ export default function ProfilePage() {
                     value={profileData.maritalStatus}
                     onChange={(e) => handleInputChange("maritalStatus", e.target.value)}
                     className="mt-1"
+                    disabled={isReadOnly}
                   />
                 </div>
                 <div>
@@ -573,6 +665,7 @@ export default function ProfilePage() {
                     value={profileData.nationality}
                     onChange={(e) => handleInputChange("nationality", e.target.value)}
                     className="mt-1"
+                    disabled={isReadOnly}
                   />
                 </div>
                 <div>
@@ -583,6 +676,7 @@ export default function ProfilePage() {
                     value={profileData.dateOfJoining}
                     onChange={(e) => handleInputChange("dateOfJoining", e.target.value)}
                     className="mt-1"
+                    disabled={isReadOnly}
                   />
                 </div>
                 <div>
@@ -593,6 +687,7 @@ export default function ProfilePage() {
                     value={profileData.personalEmail}
                     onChange={(e) => handleInputChange("personalEmail", e.target.value)}
                     className="mt-1"
+                    disabled={isReadOnly}
                   />
                 </div>
                 <div className="md:col-span-2">
@@ -602,6 +697,7 @@ export default function ProfilePage() {
                     value={profileData.residingAddress}
                     onChange={(e) => handleInputChange("residingAddress", e.target.value)}
                     className="mt-1"
+                    disabled={isReadOnly}
                   />
                 </div>
               </div>
@@ -621,6 +717,7 @@ export default function ProfilePage() {
                     value={profileData.accountNumber}
                     onChange={(e) => handleInputChange("accountNumber", e.target.value)}
                     className="mt-1"
+                    disabled={isReadOnly}
                   />
                 </div>
                 <div>
@@ -630,6 +727,7 @@ export default function ProfilePage() {
                     value={profileData.bankName}
                     onChange={(e) => handleInputChange("bankName", e.target.value)}
                     className="mt-1"
+                    disabled={isReadOnly}
                   />
                 </div>
                 <div>
@@ -639,6 +737,7 @@ export default function ProfilePage() {
                     value={profileData.ifscCode}
                     onChange={(e) => handleInputChange("ifscCode", e.target.value)}
                     className="mt-1"
+                    disabled={isReadOnly}
                   />
                 </div>
                 <div>
@@ -648,6 +747,7 @@ export default function ProfilePage() {
                     value={profileData.panNo}
                     onChange={(e) => handleInputChange("panNo", e.target.value)}
                     className="mt-1"
+                    disabled={isReadOnly}
                   />
                 </div>
                 <div>
@@ -657,6 +757,7 @@ export default function ProfilePage() {
                     value={profileData.uanNo}
                     onChange={(e) => handleInputChange("uanNo", e.target.value)}
                     className="mt-1"
+                    disabled={isReadOnly}
                   />
                 </div>
                 <div>
@@ -666,6 +767,7 @@ export default function ProfilePage() {
                     value={profileData.empCode}
                     onChange={(e) => handleInputChange("empCode", e.target.value)}
                     className="mt-1"
+                    disabled={isReadOnly || isViewingOtherEmployee}
                   />
                 </div>
               </div>
@@ -685,17 +787,17 @@ export default function ProfilePage() {
             <CardContent className="space-y-4">
               <div>
                 <Label htmlFor="currentPassword">Current Password</Label>
-                <Input id="currentPassword" type="password" className="mt-1" />
+                <Input id="currentPassword" type="password" className="mt-1" disabled={isReadOnly} />
               </div>
               <div>
                 <Label htmlFor="newPassword">New Password</Label>
-                <Input id="newPassword" type="password" className="mt-1" />
+                <Input id="newPassword" type="password" className="mt-1" disabled={isReadOnly} />
               </div>
               <div>
                 <Label htmlFor="confirmPassword">Confirm New Password</Label>
-                <Input id="confirmPassword" type="password" className="mt-1" />
+                <Input id="confirmPassword" type="password" className="mt-1" disabled={isReadOnly} />
               </div>
-              <Button>Update Password</Button>
+              <Button disabled={isReadOnly}>Update Password</Button>
             </CardContent>
           </Card>
         </TabsContent>

@@ -1,6 +1,7 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, KeyboardEvent } from "react"
+import { useRouter } from "next/navigation"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
@@ -29,6 +30,8 @@ interface Employee {
 export default function EmployeesPage() {
   const { user } = useAuth()
   const canAddEmployee = !!user && (user.role === "admin" || user.role === "hr_officer")
+  const canViewProfiles = !!user && ["admin", "hr_officer", "payroll_officer"].includes(user.role)
+  const router = useRouter()
   const [employees, setEmployees] = useState<Employee[]>([])
   const [searchTerm, setSearchTerm] = useState("")
   const [isLoading, setIsLoading] = useState(true)
@@ -70,6 +73,21 @@ export default function EmployeesPage() {
       setError("Failed to load employees")
     } finally {
       setIsLoading(false)
+    }
+  }
+
+  const handleCardClick = (employee: Employee) => {
+    if (!canViewProfiles || !employee.id) {
+      return
+    }
+
+    router.push(`/profile?employeeId=${encodeURIComponent(employee.id)}`)
+  }
+
+  const handleCardKeyDown = (event: KeyboardEvent<HTMLDivElement>, employee: Employee) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault()
+      handleCardClick(employee)
     }
   }
 
@@ -164,7 +182,15 @@ export default function EmployeesPage() {
       {/* Employees Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
         {filteredEmployees.map((employee) => (
-          <Card key={employee.id} className="p-4 hover:shadow-lg transition-shadow cursor-pointer relative">
+          <Card
+            key={employee.id}
+            className={`p-4 hover:shadow-lg transition-shadow ${canViewProfiles ? "cursor-pointer" : ""} relative`}
+            role={canViewProfiles ? "button" : undefined}
+            tabIndex={canViewProfiles ? 0 : -1}
+            onClick={() => handleCardClick(employee)}
+            onKeyDown={(event) => handleCardKeyDown(event, employee)}
+            title={canViewProfiles ? "View profile" : undefined}
+          >
             {/* Status indicator - top right */}
             <div className="absolute top-4 right-4 flex items-center justify-center">
               {getStatusIndicator(employee.status)}
