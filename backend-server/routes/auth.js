@@ -8,6 +8,35 @@ const router = express.Router()
 const ACCESS_TOKEN_EXPIRE_MINUTES = 30
 const JWT_SECRET = process.env.JWT_SECRET || "dev-secret"
 const PG_UNDEFINED_TABLE = "42P01"
+const PG_UNDEFINED_COLUMN = "42703"
+
+async function ensureUserSchema(client) {
+  if (!client) {
+    return
+  }
+
+  try {
+    await client.query(
+      `
+        ALTER TABLE users
+        ADD COLUMN IF NOT EXISTS employee_id UUID,
+        ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active',
+        ADD COLUMN IF NOT EXISTS last_login TIMESTAMP,
+        ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      `
+    )
+
+    await client.query(`UPDATE users SET status = 'active' WHERE status IS NULL`)
+  } catch (error) {
+    if (error.code === PG_UNDEFINED_TABLE) {
+      console.warn("[v0] Auth: users table missing while ensuring schema")
+      return
+    }
+
+    throw error
+  }
+}
 
 async function resetCompanyData(client) {
   const tablesInOrder = [
@@ -99,8 +128,19 @@ async function fetchUserWithDetailsByEmail(email) {
     LIMIT 1;
   `
 
-  const result = await pool.query(query, [email])
-  return result.rowCount > 0 ? result.rows[0] : null
+  try {
+    const result = await pool.query(query, [email])
+    return result.rowCount > 0 ? result.rows[0] : null
+  } catch (error) {
+    if (error.code === PG_UNDEFINED_COLUMN) {
+      console.warn("[v0] Auth: Detected legacy users schema. Attempting to patch...")
+      await ensureUserSchema(pool)
+      const result = await pool.query(query, [email])
+      return result.rowCount > 0 ? result.rows[0] : null
+    }
+
+    throw error
+  }
 }
 
 async function fetchUserWithDetailsById(client, id) {
@@ -123,8 +163,19 @@ async function fetchUserWithDetailsById(client, id) {
     LIMIT 1;
   `
 
-  const result = await client.query(query, [id])
-  return result.rowCount > 0 ? result.rows[0] : null
+  try {
+    const result = await client.query(query, [id])
+    return result.rowCount > 0 ? result.rows[0] : null
+  } catch (error) {
+    if (error.code === PG_UNDEFINED_COLUMN) {
+      console.warn("[v0] Auth: Detected legacy users schema while fetching by id. Attempting to patch...")
+      await ensureUserSchema(client)
+      const result = await client.query(query, [id])
+      return result.rowCount > 0 ? result.rows[0] : null
+    }
+
+    throw error
+  }
 }
 
 function splitName(fullName = "") {
@@ -228,6 +279,8 @@ router.post("/signup", async (req, res) => {
     try {
     await client.query("BEGIN")
 
+  await ensureUserSchema(client)
+
     console.log("[v0] Signup: Resetting company data for new account")
     await resetCompanyData(client)
 
@@ -238,14 +291,33 @@ router.post("/signup", async (req, res) => {
 
       const hashedPassword = bcrypt.hashSync(password, 10)
 
-      const userInsert = await client.query(
-        `
-          INSERT INTO users (employee_id, email, password_hash, role, status)
-          VALUES ($1, $2, $3, $4, 'active')
-          RETURNING id;
-        `,
-        [employeeId, email.toLowerCase(), hashedPassword, normalizedRole]
-      )
+      let userInsert
+
+      try {
+        userInsert = await client.query(
+          `
+            INSERT INTO users (employee_id, email, password_hash, role, status)
+            VALUES ($1, $2, $3, $4, 'active')
+            RETURNING id;
+          `,
+          [employeeId, email.toLowerCase(), hashedPassword, normalizedRole]
+        )
+      } catch (error) {
+        if (error.code === PG_UNDEFINED_COLUMN) {
+          console.warn("[v0] Signup: Falling back to legacy users schema")
+          const parsedName = splitName(name)
+          userInsert = await client.query(
+            `
+              INSERT INTO users (email, password_hash, role, first_name, last_name, is_active)
+              VALUES ($1, $2, $3, $4, $5, true)
+              RETURNING id;
+            `,
+            [email.toLowerCase(), hashedPassword, normalizedRole, parsedName.firstName, parsedName.lastName]
+          )
+        } else {
+          throw error
+        }
+      }
 
       if (company) {
         await upsertSetting(client, "company_name", company.companyName, "string")
