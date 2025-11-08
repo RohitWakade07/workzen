@@ -9,6 +9,36 @@ const ACCESS_TOKEN_EXPIRE_MINUTES = 30
 const JWT_SECRET = process.env.JWT_SECRET || "dev-secret"
 const PG_UNDEFINED_TABLE = "42P01"
 
+async function resetCompanyData(client) {
+  const tablesInOrder = [
+    "audit_logs",
+    "payroll_approvals",
+    "payroll_entries",
+    "payruns",
+    "leave_approvals",
+    "time_off_requests",
+    "attendance_records",
+    "leave_allocations",
+    "employee_salary",
+    "employee_profiles",
+    "users",
+    "employees",
+    "departments",
+    "system_settings",
+  ]
+
+  for (const table of tablesInOrder) {
+    try {
+      await client.query(`TRUNCATE TABLE ${table} RESTART IDENTITY CASCADE;`)
+    } catch (error) {
+      if (error.code !== PG_UNDEFINED_TABLE) {
+        throw error
+      }
+      console.warn(`[v0] Auth: Skipped truncating ${table} because it does not exist yet`)
+    }
+  }
+}
+
 if (!process.env.JWT_SECRET) {
   console.warn("[v0] Auth: JWT_SECRET not set. Falling back to an insecure default. Set JWT_SECRET in your environment.")
 }
@@ -196,7 +226,10 @@ router.post("/signup", async (req, res) => {
 
     const client = await pool.connect()
     try {
-      await client.query("BEGIN")
+    await client.query("BEGIN")
+
+    console.log("[v0] Signup: Resetting company data for new account")
+    await resetCompanyData(client)
 
       const departmentName = company?.companyName ? `${company.companyName} Admin` : "Administration"
       const departmentId = await ensureDepartment(client, departmentName)
