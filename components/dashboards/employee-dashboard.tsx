@@ -1,29 +1,63 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Clock, Calendar, DollarSign, AlertCircle, FileText } from "lucide-react"
+import { Clock, Calendar, DollarSign, AlertCircle, FileText, Loader2 } from "lucide-react"
 import AttendanceModule from "@/components/employee/attendance-module"
 import TimeOffModule from "@/components/employee/time-off-module"
 import PayslipModule from "@/components/employee/payslip-module"
+import { api } from "@/lib/api"
+import { useAuth } from "@/lib/auth-context"
 
 export default function EmployeeDashboard() {
   console.log("[v0] EmployeeDashboard: Rendered")
+  const { user } = useAuth()
   const [activeTab, setActiveTab] = useState<"overview" | "attendance" | "timeoff" | "payslips">("overview")
+  const [isLoading, setIsLoading] = useState(true)
+  const [stats, setStats] = useState([
+    { icon: <Clock size={24} />, label: "Hours This Week", value: "0", unit: "hrs" },
+    { icon: <Calendar size={24} />, label: "Leave Balance", value: "0", unit: "days" },
+    { icon: <DollarSign size={24} />, label: "YTD Earnings", value: "$0", unit: "" },
+  ])
+  const [recentActivity, setRecentActivity] = useState<{ date: string; action: string }[]>([])
 
-  // Mock data - will be replaced with API calls
-  const stats = [
-    { icon: <Clock size={24} />, label: "Hours This Week", value: "38.5", unit: "hrs" },
-    { icon: <Calendar size={24} />, label: "Leave Balance", value: "12", unit: "days" },
-    { icon: <DollarSign size={24} />, label: "YTD Earnings", value: "$45,250", unit: "" },
-  ]
+  useEffect(() => {
+    const fetchDashboardData = async () => {
+      try {
+        setIsLoading(true)
+        
+        if (user?.employeeId) {
+          // Fetch attendance stats
+          const attendanceResponse = await api.get<{ stats?: any }>(`/api/attendance/${user.employeeId}`)
+          const workHours = attendanceResponse.data?.stats?.totalWorkHours || 0
+          
+          // Fetch leave balance
+          const leaveResponse = await api.get<{ balance?: number }>(`/api/leave/balance/${user.employeeId}`)
+          const leaveBalance = leaveResponse.data?.balance || 0
+          
+          setStats([
+            { icon: <Clock size={24} />, label: "Hours This Week", value: workHours.toFixed(1), unit: "hrs" },
+            { icon: <Calendar size={24} />, label: "Leave Balance", value: leaveBalance.toString(), unit: "days" },
+            { icon: <DollarSign size={24} />, label: "YTD Earnings", value: "$0", unit: "" },
+          ])
+          
+          // Mock recent activity (can be replaced with API call)
+          setRecentActivity([
+            { date: "Today", action: "Checked in at 9:00 AM" },
+            { date: "Yesterday", action: "Submitted time off request for 1 day" },
+            { date: "2 days ago", action: "Payslip generated for November" },
+          ])
+        }
+      } catch (err) {
+        console.error("[v0] EmployeeDashboard: Error fetching dashboard data:", err)
+      } finally {
+        setIsLoading(false)
+      }
+    }
 
-  const recentActivity = [
-    { date: "Today", action: "Checked in at 9:00 AM" },
-    { date: "Yesterday", action: "Submitted time off request for 1 day" },
-    { date: "2 days ago", action: "Payslip generated for November" },
-  ]
+    fetchDashboardData()
+  }, [user?.employeeId])
 
   if (activeTab === "attendance") {
     return <AttendanceModule onBack={() => setActiveTab("overview")} />
@@ -35,6 +69,14 @@ export default function EmployeeDashboard() {
 
   if (activeTab === "payslips") {
     return <PayslipModule onBack={() => setActiveTab("overview")} />
+  }
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      </div>
+    )
   }
 
   return (

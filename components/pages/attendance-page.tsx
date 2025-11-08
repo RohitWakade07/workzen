@@ -1,9 +1,12 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { api } from "@/lib/api"
+import { useAuth } from "@/lib/auth-context"
+import { Loader2 } from "lucide-react"
 
 interface AttendanceRecord {
   employeeId: string
@@ -16,47 +19,85 @@ interface AttendanceRecord {
   date: string
 }
 
-const MOCK_ATTENDANCE: AttendanceRecord[] = [
-  {
-    employeeId: "emp_001",
-    employeeName: "John Smith",
-    checkInTime: "09:15 AM",
-    checkOutTime: "06:30 PM",
-    workHours: 8.75,
-    breakTime: 1,
-    status: "present",
-    date: "2025-01-08",
-  },
-  {
-    employeeId: "emp_002",
-    employeeName: "Sarah Johnson",
-    checkInTime: "09:00 AM",
-    checkOutTime: "05:00 PM",
-    workHours: 8,
-    breakTime: 1,
-    status: "present",
-    date: "2025-01-08",
-  },
-  {
-    employeeId: "emp_003",
-    employeeName: "Mike Chen",
-    checkInTime: "-",
-    checkOutTime: "-",
-    workHours: 0,
-    breakTime: 0,
-    status: "absent",
-    date: "2025-01-08",
-  },
-]
-
 interface AttendancePageProps {
   role: string
 }
 
 export default function AttendancePage({ role }: AttendancePageProps) {
-  const [attendance] = useState<AttendanceRecord[]>(MOCK_ATTENDANCE)
+  const { user } = useAuth()
+  const [attendance, setAttendance] = useState<AttendanceRecord[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [stats, setStats] = useState({
+    totalDaysPresent: 0,
+    pendingApprovals: 0,
+    totalWorkHours: 0,
+    presentToday: 0,
+    absent: 0,
+    onLeave: 0,
+    halfDay: 0,
+  })
+
+  useEffect(() => {
+    const fetchAttendance = async () => {
+      try {
+        setIsLoading(true)
+        setError(null)
+
+        if (role === "employee" && user?.employeeId) {
+          // Fetch employee's own attendance
+          const response = await api.get<{ records: AttendanceRecord[]; stats?: any }>(`/api/attendance/${user.employeeId}`)
+          if (response.error) {
+            setError(response.error)
+          } else if (response.data) {
+            setAttendance(response.data.records || [])
+            if (response.data.stats) {
+              setStats(response.data.stats)
+            }
+          }
+        } else {
+          // Fetch all attendance for admin/HR
+          const response = await api.get<{ records: AttendanceRecord[]; stats?: any }>("/api/attendance/")
+          if (response.error) {
+            setError(response.error)
+          } else if (response.data) {
+            setAttendance(response.data.records || [])
+            if (response.data.stats) {
+              setStats(response.data.stats)
+            }
+          }
+        }
+      } catch (err) {
+        console.error("[v0] AttendancePage: Error fetching attendance:", err)
+        setError("Failed to load attendance data")
+      } finally {
+        setIsLoading(false)
+      }
+    }
+
+    fetchAttendance()
+  }, [role, user?.employeeId])
 
   console.log("[v0] AttendancePage: Rendered for role", role)
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-3xl font-bold text-foreground">Attendance</h1>
+          <p className="text-muted-foreground mt-1 text-red-500">{error}</p>
+        </div>
+      </div>
+    )
+  }
 
   if (role === "employee") {
     return (
@@ -69,15 +110,15 @@ export default function AttendancePage({ role }: AttendancePageProps) {
         <div className="grid grid-cols-3 gap-4">
           <Card className="p-4">
             <p className="text-sm text-muted-foreground">Total Days Present</p>
-            <p className="text-2xl font-bold mt-2">18</p>
+            <p className="text-2xl font-bold mt-2">{stats.totalDaysPresent}</p>
           </Card>
           <Card className="p-4">
             <p className="text-sm text-muted-foreground">Pending Approvals</p>
-            <p className="text-2xl font-bold mt-2">2</p>
+            <p className="text-2xl font-bold mt-2">{stats.pendingApprovals}</p>
           </Card>
           <Card className="p-4">
             <p className="text-sm text-muted-foreground">Total Work Hours</p>
-            <p className="text-2xl font-bold mt-2">144.5</p>
+            <p className="text-2xl font-bold mt-2">{stats.totalWorkHours.toFixed(1)}</p>
           </Card>
         </div>
 
@@ -115,6 +156,17 @@ export default function AttendancePage({ role }: AttendancePageProps) {
   }
 
   // Admin/HR Officer view
+  if (attendance.length === 0) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-3xl font-bold text-foreground">Attendance</h1>
+          <p className="text-muted-foreground mt-1">No attendance records found</p>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-6">
       <div>
@@ -125,19 +177,19 @@ export default function AttendancePage({ role }: AttendancePageProps) {
       <div className="grid grid-cols-4 gap-4">
         <Card className="p-4">
           <p className="text-sm text-muted-foreground">Present Today</p>
-          <p className="text-2xl font-bold mt-2">12</p>
+          <p className="text-2xl font-bold mt-2">{stats.presentToday}</p>
         </Card>
         <Card className="p-4">
           <p className="text-sm text-muted-foreground">Absent</p>
-          <p className="text-2xl font-bold mt-2">3</p>
+          <p className="text-2xl font-bold mt-2">{stats.absent}</p>
         </Card>
         <Card className="p-4">
           <p className="text-sm text-muted-foreground">On Leave</p>
-          <p className="text-2xl font-bold mt-2">2</p>
+          <p className="text-2xl font-bold mt-2">{stats.onLeave}</p>
         </Card>
         <Card className="p-4">
           <p className="text-sm text-muted-foreground">Half Day</p>
-          <p className="text-2xl font-bold mt-2">1</p>
+          <p className="text-2xl font-bold mt-2">{stats.halfDay}</p>
         </Card>
       </div>
 

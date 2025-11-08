@@ -1,327 +1,297 @@
 import express from "express";
+import pool from "../config/database.js";
 
 const router = express.Router();
 
-// Mock employee data storage (in production, use a database)
-const employeesData = {
-  "emp_001": {
-    id: "emp_001",
-    employee_id: "EMP001",
-    first_name: "John",
-    last_name: "Doe",
-    email: "john.doe@company.com",
-    department: "Engineering",
-    position: "Senior Developer",
-    status: "active",
-    phone: "555-0101",
-    date_of_joining: "2020-03-15",
-    salary: 85000
-  },
-  "emp_002": {
-    id: "emp_002",
-    employee_id: "EMP002",
-    first_name: "Jane",
-    last_name: "Smith",
-    email: "jane.smith@company.com",
-    department: "HR",
-    position: "HR Manager",
-    status: "active"
-  }
-};
-
-// Mock profile data storage
-const profilesData = {};
-
-// Mock salary data storage
-const salaryData = {};
-
-// GET /api/employees/
-router.get("/", (req, res) => {
+/**
+ * ✅ GET /api/employees/
+ * Fetch all employees
+ */
+router.get("/", async (req, res) => {
   console.log("[v0] Fetching employee list");
-  
   try {
-    const employees = Object.values(employeesData);
-    console.log(`[v0] Returning ${employees.length} employees`);
-    res.json(employees);
+    const result = await pool.query("SELECT * FROM employees ORDER BY id ASC");
+    console.log(`[v0] Returning ${result.rowCount} employees`);
+    res.json(result.rows);
   } catch (error) {
     console.error(`[v0] Error fetching employees: ${error.message}`);
     res.status(500).json({ detail: "Failed to fetch employees" });
   }
 });
 
-// GET /api/employees/:employee_id
-router.get("/:employee_id", (req, res) => {
+/**
+ * ✅ GET /api/employees/:employee_id
+ * Fetch details for a single employee
+ */
+router.get("/:employee_id", async (req, res) => {
   const { employee_id } = req.params;
   console.log(`[v0] Fetching employee details for ${employee_id}`);
-  
+
   try {
-    // Try to find by employee_id first, then by id
-    let employee = Object.values(employeesData).find(
-      emp => emp.employee_id === employee_id || emp.id === employee_id
+    const result = await pool.query(
+      "SELECT * FROM employees WHERE employee_id = $1 OR id = $1",
+      [employee_id]
     );
-    
-    if (!employee) {
-      // Return default employee data
-      employee = {
-        id: employee_id,
-        employee_id: employee_id,
-        first_name: "John",
-        last_name: "Doe",
-        email: `${employee_id}@company.com`,
-        department: "Engineering",
-        position: "Developer",
-        status: "active",
-        phone: "555-0101",
-        date_of_joining: "2020-03-15",
-        salary: 85000
-      };
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ detail: "Employee not found" });
     }
-    
-    console.log(`[v0] Employee data retrieved: ${employee_id}`);
-    res.json(employee);
+
+    res.json(result.rows[0]);
   } catch (error) {
     console.error(`[v0] Error fetching employee ${employee_id}: ${error.message}`);
-    res.status(404).json({ detail: "Employee not found" });
+    res.status(500).json({ detail: "Failed to fetch employee" });
   }
 });
 
-// POST /api/employees/
-router.post("/", (req, res) => {
+/**
+ * ✅ POST /api/employees/
+ * Create a new employee
+ */
+router.post("/", async (req, res) => {
   const data = req.body;
   console.log(`[v0] Creating new employee with ID: ${data.employee_id}`);
-  
+
   try {
     const requiredFields = ["employee_id", "first_name", "last_name", "email", "department"];
-    const missingFields = requiredFields.filter(field => !data[field]);
-    
-    if (missingFields.length > 0) {
-      console.log(`[v0] Employee creation failed - missing fields: ${missingFields.join(", ")}`);
-      return res.status(400).json({
-        detail: `Missing required fields: ${missingFields.join(", ")}`
-      });
+    const missing = requiredFields.filter(f => !data[f]);
+    if (missing.length > 0) {
+      return res.status(400).json({ detail: `Missing required fields: ${missing.join(", ")}` });
     }
-    
-    console.log(`[v0] Employee created successfully: ${data.employee_id}`);
-    res.json({ id: "emp_new", message: "Employee created successfully" });
+
+    const result = await pool.query(
+      `
+      INSERT INTO employees 
+        (employee_id, first_name, last_name, email, department, position, status, phone, date_of_joining, salary)
+      VALUES 
+        ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+      RETURNING *;
+      `,
+      [
+        data.employee_id,
+        data.first_name,
+        data.last_name,
+        data.email,
+        data.department,
+        data.position || "Employee",
+        data.status || "active",
+        data.phone || null,
+        data.date_of_joining || new Date().toISOString().split("T")[0],
+        data.salary || 0,
+      ]
+    );
+
+    res.json({ message: "Employee created successfully", employee: result.rows[0] });
   } catch (error) {
     console.error(`[v0] Error creating employee: ${error.message}`);
     res.status(500).json({ detail: "Failed to create employee" });
   }
 });
 
-// GET /api/employees/:employee_id/profile
-router.get("/:employee_id/profile", (req, res) => {
+/**
+ * ✅ GET /api/employees/:employee_id/profile
+ * Fetch profile details for an employee
+ */
+router.get("/:employee_id/profile", async (req, res) => {
   const { employee_id } = req.params;
   console.log(`[v0] Fetching profile for employee: ${employee_id}`);
-  console.log(`[v0] Available profile keys:`, Object.keys(profilesData));
-  console.log(`[v0] Available employee keys:`, Object.keys(employeesData));
-  
+
   try {
-    // Check if profile exists in storage (try multiple key formats)
-    const keysToTry = [
-      employee_id,
-      employee_id.toUpperCase(),
-      employee_id.toLowerCase(),
-      employee_id.replace(/^emp_/, ""),
-      employee_id.replace(/^EMP/, ""),
-      `emp_${employee_id}`,
-      `EMP${employee_id}`
-    ];
-    
-    let profile = null;
-    for (const key of keysToTry) {
-      if (profilesData[key]) {
-        profile = profilesData[key];
-        console.log(`[v0] Found profile with key: ${key}`);
-        break;
-      }
-    }
-    
-    if (!profile) {
-      // Try to find employee by ID to get default data
-      const employee = Object.values(employeesData).find(
-        emp => {
-          const empIdMatch = emp.employee_id === employee_id || 
-                            emp.employee_id === employee_id.toUpperCase() ||
-                            emp.employee_id === employee_id.toLowerCase();
-          const idMatch = emp.id === employee_id ||
-                         emp.id === employee_id.toLowerCase() ||
-                         emp.id === employee_id.toUpperCase();
-          return empIdMatch || idMatch;
-        }
-      );
-      
-      console.log(`[v0] Employee found:`, employee ? "Yes" : "No");
-      
-      // Return default profile data
-      profile = {
+    const result = await pool.query(
+      `
+      SELECT p.*, e.first_name, e.last_name, e.email, e.department, e.position, e.phone, e.date_of_joining
+      FROM employee_profiles p
+      JOIN employees e ON e.employee_id = p.employee_id
+      WHERE p.employee_id = $1;
+      `,
+      [employee_id]
+    );
+
+    if (result.rowCount === 0) {
+      // fallback — employee exists but no profile yet
+      const emp = await pool.query("SELECT * FROM employees WHERE employee_id = $1", [employee_id]);
+      if (emp.rowCount === 0)
+        return res.status(404).json({ detail: "Employee not found" });
+
+      const e = emp.rows[0];
+      return res.json({
         employee_id: employee_id,
-        name: employee?.first_name && employee?.last_name 
-          ? `${employee.first_name} ${employee.last_name}` 
-          : "John Doe",
-        email: employee?.email || `${employee_id}@company.com`,
-        mobile: employee?.phone || "555-0101",
+        name: `${e.first_name} ${e.last_name}`,
+        email: e.email,
+        department: e.department,
+        phone: e.phone,
+        position: e.position,
         company: "Test Company",
-        department: employee?.department || "Engineering",
-        manager: "Jane Manager",
-        location: "New York",
+        location: "Unknown",
         about: "",
-        job_love: "",
-        interests: "",
         skills: [],
         certifications: [],
-        date_of_birth: "",
-        residing_address: "",
-        nationality: "",
-        personal_email: "",
-        gender: "",
-        marital_status: "",
-        date_of_joining: employee?.date_of_joining || "2020-03-15",
-        account_number: "",
-        bank_name: "",
-        ifsc_code: "",
-        pan_no: "",
-        uan_no: "",
-        emp_code: employee?.employee_id || employee_id
-      };
+        manager: "Not Assigned",
+        date_of_joining: e.date_of_joining,
+      });
     }
-    
-    console.log(`[v0] Profile data retrieved for: ${employee_id}`);
-    res.json(profile);
+
+    res.json(result.rows[0]);
   } catch (error) {
     console.error(`[v0] Error fetching profile ${employee_id}: ${error.message}`);
-    console.error(`[v0] Error stack:`, error.stack);
-    res.status(404).json({ detail: `Profile not found: ${error.message}` });
+    res.status(500).json({ detail: "Failed to fetch profile" });
   }
 });
 
-// PUT /api/employees/:employee_id/profile
-router.put("/:employee_id/profile", (req, res) => {
+/**
+ * ✅ PUT /api/employees/:employee_id/profile
+ * Update or create an employee profile
+ */
+router.put("/:employee_id/profile", async (req, res) => {
   const { employee_id } = req.params;
   const data = req.body;
   console.log(`[v0] Updating profile for employee: ${employee_id}`);
-  console.log(`[v0] Profile data:`, JSON.stringify(data, null, 2));
-  
+
   try {
-    // Store the profile data (normalize the key)
-    const storageKey = employee_id;
-    profilesData[storageKey] = {
-      ...profilesData[storageKey],
-      ...data,
-      employee_id: employee_id,
-      emp_code: data.emp_code || employee_id
-    };
-    
-    console.log(`[v0] Profile updated successfully: ${employee_id}`);
-    res.json({
-      message: "Profile updated successfully",
-      employee_id: employee_id
-    });
+    const exists = await pool.query(
+      "SELECT * FROM employee_profiles WHERE employee_id = $1",
+      [employee_id]
+    );
+
+    if (exists.rowCount > 0) {
+      await pool.query(
+        `
+        UPDATE employee_profiles
+        SET about = $1, job_love = $2, interests = $3, skills = $4, certifications = $5,
+            manager = $6, location = $7, gender = $8, marital_status = $9, nationality = $10
+        WHERE employee_id = $11;
+        `,
+        [
+          data.about || "",
+          data.job_love || "",
+          data.interests || "",
+          JSON.stringify(data.skills || []),
+          JSON.stringify(data.certifications || []),
+          data.manager || "",
+          data.location || "",
+          data.gender || "",
+          data.marital_status || "",
+          data.nationality || "",
+          employee_id,
+        ]
+      );
+    } else {
+      await pool.query(
+        `
+        INSERT INTO employee_profiles
+        (employee_id, about, job_love, interests, skills, certifications, manager, location, gender, marital_status, nationality)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11);
+        `,
+        [
+          employee_id,
+          data.about || "",
+          data.job_love || "",
+          data.interests || "",
+          JSON.stringify(data.skills || []),
+          JSON.stringify(data.certifications || []),
+          data.manager || "",
+          data.location || "",
+          data.gender || "",
+          data.marital_status || "",
+          data.nationality || "",
+        ]
+      );
+    }
+
+    res.json({ message: "Profile updated successfully", employee_id });
   } catch (error) {
     console.error(`[v0] Error updating profile ${employee_id}: ${error.message}`);
     res.status(500).json({ detail: "Failed to update profile" });
   }
 });
 
-// GET /api/employees/:employee_id/salary
-router.get("/:employee_id/salary", (req, res) => {
+/**
+ * ✅ GET /api/employees/:employee_id/salary
+ * Fetch salary info for employee
+ */
+router.get("/:employee_id/salary", async (req, res) => {
   const { employee_id } = req.params;
   console.log(`[v0] Fetching salary info for employee: ${employee_id}`);
-  
+
   try {
-    // Check if salary data exists in storage
-    let salary = salaryData[employee_id];
-    
-    if (!salary) {
-      // Return default salary data
-      salary = {
-        employee_id: employee_id,
+    const result = await pool.query(
+      "SELECT * FROM employee_salary WHERE employee_id = $1",
+      [employee_id]
+    );
+
+    if (result.rowCount === 0) {
+      return res.json({
+        employee_id,
         month_wage: 50000,
         yearly_wage: 600000,
         working_days_per_week: 5,
         break_time: 1,
-        salary_components: [
-          {
-            id: "basic",
-            name: "Basic Salary",
-            computation_type: "percentage",
-            value: 50.0,
-            base: "wage",
-            description: "Define Basic salary from company cost compute it based on monthly Wages"
-          },
-          {
-            id: "hra",
-            name: "House Rent Allowance (HRA)",
-            computation_type: "percentage",
-            value: 50.0,
-            base: "basic",
-            description: "HRA provided to employees 50% of the basic salary"
-          },
-          {
-            id: "standard",
-            name: "Standard Allowance",
-            computation_type: "fixed",
-            value: 4167.0,
-            base: "wage",
-            description: "A standard allowance is a predetermined, fixed amount provided to employee as part of their salary"
-          },
-          {
-            id: "performance",
-            name: "Performance Bonus",
-            computation_type: "percentage",
-            value: 8.33,
-            base: "basic",
-            description: "Variable amount paid during payroll. The value defined by the company and calculated as a % of the basic salary"
-          },
-          {
-            id: "lta",
-            name: "Leave Travel Allowance (LTA)",
-            computation_type: "percentage",
-            value: 8.33,
-            base: "basic",
-            description: "LTA is paid by the company to employees to cover their travel expenses. and calculated as a % of the basic salary"
-          },
-          {
-            id: "fixed",
-            name: "Fixed Allowance",
-            computation_type: "fixed",
-            value: 0,
-            base: "wage",
-            description: "fixed allowance portion of wages is determined after calculating all salary components"
-          }
-        ],
         pf_rate: 12.0,
-        professional_tax: 200.0
-      };
+        professional_tax: 200.0,
+        salary_components: [
+          { id: "basic", name: "Basic Salary", computation_type: "percentage", value: 50.0 },
+          { id: "hra", name: "House Rent Allowance", computation_type: "percentage", value: 50.0 },
+        ],
+      });
     }
-    
-    console.log(`[v0] Salary data retrieved for: ${employee_id}`);
-    res.json(salary);
+
+    res.json(result.rows[0]);
   } catch (error) {
     console.error(`[v0] Error fetching salary ${employee_id}: ${error.message}`);
-    res.status(404).json({ detail: "Salary information not found" });
+    res.status(500).json({ detail: "Failed to fetch salary" });
   }
 });
 
-// PUT /api/employees/:employee_id/salary
-router.put("/:employee_id/salary", (req, res) => {
+/**
+ * ✅ PUT /api/employees/:employee_id/salary
+ * Update or create salary info
+ */
+router.put("/:employee_id/salary", async (req, res) => {
   const { employee_id } = req.params;
   const data = req.body;
   console.log(`[v0] Updating salary info for employee: ${employee_id}`);
-  
+
   try {
-    // Store the salary data
-    salaryData[employee_id] = {
-      ...salaryData[employee_id],
-      ...data,
-      employee_id: employee_id
-    };
-    
-    console.log(`[v0] Salary updated successfully: ${employee_id}`);
-    res.json({
-      message: "Salary information updated successfully",
-      employee_id: employee_id
-    });
+    const exists = await pool.query(
+      "SELECT * FROM employee_salary WHERE employee_id = $1",
+      [employee_id]
+    );
+
+    if (exists.rowCount > 0) {
+      await pool.query(
+        `
+        UPDATE employee_salary
+        SET month_wage = $1, yearly_wage = $2, pf_rate = $3, professional_tax = $4, salary_components = $5
+        WHERE employee_id = $6;
+        `,
+        [
+          data.month_wage,
+          data.yearly_wage,
+          data.pf_rate,
+          data.professional_tax,
+          JSON.stringify(data.salary_components || []),
+          employee_id,
+        ]
+      );
+    } else {
+      await pool.query(
+        `
+        INSERT INTO employee_salary
+        (employee_id, month_wage, yearly_wage, pf_rate, professional_tax, salary_components)
+        VALUES ($1,$2,$3,$4,$5,$6);
+        `,
+        [
+          employee_id,
+          data.month_wage,
+          data.yearly_wage,
+          data.pf_rate,
+          data.professional_tax,
+          JSON.stringify(data.salary_components || []),
+        ]
+      );
+    }
+
+    res.json({ message: "Salary information updated successfully", employee_id });
   } catch (error) {
     console.error(`[v0] Error updating salary ${employee_id}: ${error.message}`);
     res.status(500).json({ detail: "Failed to update salary information" });
@@ -329,4 +299,3 @@ router.put("/:employee_id/salary", (req, res) => {
 });
 
 export default router;
-

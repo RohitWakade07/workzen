@@ -2,11 +2,12 @@
 
 import type React from "react"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { ArrowLeft, Plus, Edit2, Trash2, Search, Shield } from "lucide-react"
+import { ArrowLeft, Plus, Edit2, Trash2, Search, Shield, Loader2 } from "lucide-react"
+import { api } from "@/lib/api"
 
 interface UserManagementModuleProps {
   onBack: () => void
@@ -29,49 +30,31 @@ export default function UserManagementModule({ onBack }: UserManagementModulePro
   const [showForm, setShowForm] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")
   const [filterRole, setFilterRole] = useState("all")
+  const [users, setUsers] = useState<SystemUser[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
-  const [users, setUsers] = useState<SystemUser[]>([
-    {
-      id: "usr_001",
-      email: "john.doe@company.com",
-      name: "John Doe",
-      role: "employee",
-      status: "active",
-      department: "Engineering",
-      lastLogin: "2025-11-08 09:30",
-      createdDate: "2020-03-15",
-    },
-    {
-      id: "usr_002",
-      email: "jane.hr@company.com",
-      name: "Jane Smith",
-      role: "hr_officer",
-      status: "active",
-      department: "HR",
-      lastLogin: "2025-11-08 08:15",
-      createdDate: "2021-06-20",
-    },
-    {
-      id: "usr_003",
-      email: "bob.payroll@company.com",
-      name: "Bob Wilson",
-      role: "payroll_officer",
-      status: "active",
-      department: "Payroll",
-      lastLogin: "2025-11-07 14:20",
-      createdDate: "2019-01-10",
-    },
-    {
-      id: "usr_004",
-      email: "admin@company.com",
-      name: "Admin User",
-      role: "admin",
-      status: "active",
-      department: "Administration",
-      lastLogin: "2025-11-08 07:00",
-      createdDate: "2018-01-01",
-    },
-  ])
+  useEffect(() => {
+    const fetchUsers = async () => {
+      try {
+        setIsLoading(true)
+        setError(null)
+        const response = await api.get<{ users: SystemUser[] }>("/api/admin/users")
+        if (response.error) {
+          setError(response.error)
+        } else if (response.data) {
+          setUsers(response.data.users || [])
+        }
+      } catch (err) {
+        console.error("[v0] UserManagementModule: Error fetching users:", err)
+        setError("Failed to load users")
+      } finally {
+        setIsLoading(false)
+      }
+    }
+
+    fetchUsers()
+  }, [])
 
   const [formData, setFormData] = useState({
     email: "",
@@ -80,7 +63,7 @@ export default function UserManagementModule({ onBack }: UserManagementModulePro
     department: "",
   })
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     console.log("[v0] UserManagementModule: Creating user", formData.email)
 
@@ -89,23 +72,36 @@ export default function UserManagementModule({ onBack }: UserManagementModulePro
       return
     }
 
-    const newUser: SystemUser = {
-      id: `usr_${Date.now()}`,
-      ...formData,
-      status: "active",
-      lastLogin: new Date().toLocaleString(),
-      createdDate: new Date().toISOString().split("T")[0],
-    }
+    try {
+      const response = await api.post<{ user: SystemUser }>("/api/admin/users", formData)
+      if (response.error) {
+        console.error("[v0] UserManagementModule: Error creating user:", response.error)
+        return
+      }
 
-    console.log("[v0] UserManagementModule: User created", newUser)
-    setUsers([...users, newUser])
-    setFormData({ email: "", name: "", role: "employee", department: "" })
-    setShowForm(false)
+      // Refresh user list
+      const fetchResponse = await api.get<{ users: SystemUser[] }>("/api/admin/users")
+      if (fetchResponse.data) {
+        setUsers(fetchResponse.data.users || [])
+      }
+
+      setFormData({ email: "", name: "", role: "employee", department: "" })
+      setShowForm(false)
+    } catch (err) {
+      console.error("[v0] UserManagementModule: Error creating user:", err)
+    }
   }
 
-  const handleDeleteUser = (id: string) => {
+  const handleDeleteUser = async (id: string) => {
     console.log("[v0] UserManagementModule: Deleting user", id)
-    setUsers(users.filter((u) => u.id !== id))
+    try {
+      const response = await api.delete(`/api/admin/users/${id}`)
+      if (!response.error) {
+        setUsers(users.filter((u) => u.id !== id))
+      }
+    } catch (err) {
+      console.error("[v0] UserManagementModule: Error deleting user:", err)
+    }
   }
 
   const handleSuspendUser = (id: string) => {
@@ -144,6 +140,28 @@ export default function UserManagementModule({ onBack }: UserManagementModulePro
       default:
         return "bg-gray-100 text-gray-800"
     }
+  }
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center gap-4">
+          <Button onClick={onBack} variant="outline" size="icon">
+            <ArrowLeft size={20} />
+          </Button>
+          <h2 className="text-2xl font-bold text-foreground">User Management</h2>
+        </div>
+        <p className="text-red-500">{error}</p>
+      </div>
+    )
   }
 
   return (

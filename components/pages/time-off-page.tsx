@@ -1,12 +1,14 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Search } from "lucide-react"
+import { Search, Loader2 } from "lucide-react"
+import { api } from "@/lib/api"
+import { useAuth } from "@/lib/auth-context"
 
 interface TimeOffRecord {
   id: string
@@ -19,48 +21,85 @@ interface TimeOffRecord {
   days: number
 }
 
-const MOCK_TIMEOFF: TimeOffRecord[] = [
-  {
-    id: "to_001",
-    employeeId: "emp_001",
-    employeeName: "John Smith",
-    startDate: "2025-01-15",
-    endDate: "2025-01-17",
-    type: "paid",
-    status: "approved",
-    days: 3,
-  },
-  {
-    id: "to_002",
-    employeeId: "emp_002",
-    employeeName: "Sarah Johnson",
-    startDate: "2025-01-20",
-    endDate: "2025-01-22",
-    type: "sick",
-    status: "pending",
-    days: 3,
-  },
-  {
-    id: "to_003",
-    employeeId: "emp_004",
-    employeeName: "Emma Davis",
-    startDate: "2025-02-01",
-    endDate: "2025-02-05",
-    type: "paid",
-    status: "approved",
-    days: 5,
-  },
-]
-
 interface TimeOffPageProps {
   role: string
 }
 
 export default function TimeOffPage({ role }: TimeOffPageProps) {
-  const [timeoffs] = useState<TimeOffRecord[]>(MOCK_TIMEOFF)
+  const { user } = useAuth()
+  const [timeoffs, setTimeoffs] = useState<TimeOffRecord[]>([])
   const [searchTerm, setSearchTerm] = useState("")
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [stats, setStats] = useState({
+    paidTimeOffAvailable: 0,
+    sickTimeOffAvailable: 0,
+    unpaidDaysAvailable: "Unlimited",
+    totalPaidTimeOff: 0,
+    totalSickTimeOff: 0,
+    pendingApprovals: 0,
+  })
+
+  useEffect(() => {
+    const fetchTimeOff = async () => {
+      try {
+        setIsLoading(true)
+        setError(null)
+
+        if (role === "employee" && user?.employeeId) {
+          // Fetch employee's own time off requests
+          const response = await api.get<{ requests: TimeOffRecord[]; stats?: any }>(`/api/leave/requests/${user.employeeId}`)
+          if (response.error) {
+            setError(response.error)
+          } else if (response.data) {
+            setTimeoffs(response.data.requests || [])
+            if (response.data.stats) {
+              setStats(response.data.stats)
+            }
+          }
+        } else {
+          // Fetch all time off requests for admin/HR
+          const response = await api.get<{ requests: TimeOffRecord[]; stats?: any }>("/api/leave/requests")
+          if (response.error) {
+            setError(response.error)
+          } else if (response.data) {
+            setTimeoffs(response.data.requests || [])
+            if (response.data.stats) {
+              setStats(response.data.stats)
+            }
+          }
+        }
+      } catch (err) {
+        console.error("[v0] TimeOffPage: Error fetching time off:", err)
+        setError("Failed to load time off data")
+      } finally {
+        setIsLoading(false)
+      }
+    }
+
+    fetchTimeOff()
+  }, [role, user?.employeeId])
 
   console.log("[v0] TimeOffPage: Rendered for role", role)
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-3xl font-bold text-foreground">Time Off</h1>
+          <p className="text-muted-foreground mt-1 text-red-500">{error}</p>
+        </div>
+      </div>
+    )
+  }
 
   if (role === "employee") {
     return (
@@ -74,15 +113,15 @@ export default function TimeOffPage({ role }: TimeOffPageProps) {
         <div className="grid grid-cols-3 gap-4">
           <Card className="p-4">
             <p className="text-sm text-muted-foreground">Paid Time Off Available</p>
-            <p className="text-2xl font-bold mt-2">12</p>
+            <p className="text-2xl font-bold mt-2">{stats.paidTimeOffAvailable}</p>
           </Card>
           <Card className="p-4">
             <p className="text-sm text-muted-foreground">Sick Time Off Available</p>
-            <p className="text-2xl font-bold mt-2">8</p>
+            <p className="text-2xl font-bold mt-2">{stats.sickTimeOffAvailable}</p>
           </Card>
           <Card className="p-4">
             <p className="text-sm text-muted-foreground">Unpaid Days Available</p>
-            <p className="text-2xl font-bold mt-2">Unlimited</p>
+            <p className="text-2xl font-bold mt-2">{stats.unpaidDaysAvailable}</p>
           </Card>
         </div>
 
@@ -104,7 +143,7 @@ export default function TimeOffPage({ role }: TimeOffPageProps) {
             </TableHeader>
             <TableBody>
               {timeoffs
-                .filter((to) => to.employeeId === "emp_001")
+                .filter((to) => to.employeeId === user?.employeeId)
                 .map((record) => (
                   <TableRow key={record.id}>
                     <TableCell>{record.startDate}</TableCell>
@@ -149,15 +188,15 @@ export default function TimeOffPage({ role }: TimeOffPageProps) {
       <div className="grid grid-cols-3 gap-4">
         <Card className="p-4">
           <p className="text-sm text-muted-foreground">Total Paid Time Off Available</p>
-          <p className="text-2xl font-bold mt-2">250</p>
+          <p className="text-2xl font-bold mt-2">{stats.totalPaidTimeOff}</p>
         </Card>
         <Card className="p-4">
           <p className="text-sm text-muted-foreground">Total Sick Time Off Available</p>
-          <p className="text-2xl font-bold mt-2">160</p>
+          <p className="text-2xl font-bold mt-2">{stats.totalSickTimeOff}</p>
         </Card>
         <Card className="p-4">
           <p className="text-sm text-muted-foreground">Pending Approvals</p>
-          <p className="text-2xl font-bold mt-2">5</p>
+          <p className="text-2xl font-bold mt-2">{stats.pendingApprovals}</p>
         </Card>
       </div>
 

@@ -2,11 +2,12 @@
 
 import type React from "react"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { ArrowLeft, Plus, Edit2, Trash2, Search, Phone, Mail } from "lucide-react"
+import { ArrowLeft, Plus, Edit2, Trash2, Search, Phone, Mail, Loader2 } from "lucide-react"
+import { api } from "@/lib/api"
 
 interface EmployeeManagementModuleProps {
   onBack: () => void
@@ -30,42 +31,44 @@ export default function EmployeeManagementModule({ onBack }: EmployeeManagementM
   const [showForm, setShowForm] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")
   const [filterDept, setFilterDept] = useState("all")
+  const [employees, setEmployees] = useState<Employee[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
-  const [employees, setEmployees] = useState<Employee[]>([
-    {
-      id: "emp_001",
-      name: "John Doe",
-      email: "john.doe@company.com",
-      phone: "555-0101",
-      department: "Engineering",
-      position: "Senior Developer",
-      employeeId: "EMP001",
-      joinDate: "2020-03-15",
-      status: "active",
-    },
-    {
-      id: "emp_002",
-      name: "Jane Smith",
-      email: "jane.smith@company.com",
-      phone: "555-0102",
-      department: "Marketing",
-      position: "Marketing Manager",
-      employeeId: "EMP002",
-      joinDate: "2021-06-20",
-      status: "active",
-    },
-    {
-      id: "emp_003",
-      name: "Bob Wilson",
-      email: "bob.wilson@company.com",
-      phone: "555-0103",
-      department: "Sales",
-      position: "Sales Representative",
-      employeeId: "EMP003",
-      joinDate: "2019-01-10",
-      status: "on-leave",
-    },
-  ])
+  useEffect(() => {
+    const fetchEmployees = async () => {
+      try {
+        setIsLoading(true)
+        setError(null)
+        const response = await api.get<any[]>("/api/employees/")
+        if (response.error) {
+          setError(response.error)
+        } else if (response.data) {
+          const transformedEmployees = response.data.map((emp: any) => ({
+            id: emp.id || emp.employee_id,
+            name: emp.first_name && emp.last_name 
+              ? `${emp.first_name} ${emp.last_name}` 
+              : emp.name || "Unknown",
+            email: emp.email,
+            phone: emp.phone || "",
+            department: emp.department || "Unknown",
+            position: emp.position || "Employee",
+            employeeId: emp.employee_id,
+            joinDate: emp.date_of_joining || new Date().toISOString().split("T")[0],
+            status: emp.status === "active" ? "active" : emp.status === "inactive" ? "inactive" : "on-leave",
+          }))
+          setEmployees(transformedEmployees)
+        }
+      } catch (err) {
+        console.error("[v0] EmployeeManagementModule: Error fetching employees:", err)
+        setError("Failed to load employees")
+      } finally {
+        setIsLoading(false)
+      }
+    }
+
+    fetchEmployees()
+  }, [])
 
   const [formData, setFormData] = useState({
     name: "",
@@ -76,7 +79,7 @@ export default function EmployeeManagementModule({ onBack }: EmployeeManagementM
     employeeId: "",
   })
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     console.log("[v0] EmployeeManagementModule: Submitting new employee", formData)
 
@@ -85,23 +88,62 @@ export default function EmployeeManagementModule({ onBack }: EmployeeManagementM
       return
     }
 
-    const newEmployee: Employee = {
-      id: `emp_${Date.now()}`,
-      ...formData,
-      phone: formData.phone || "",
-      joinDate: new Date().toISOString().split("T")[0],
-      status: "active",
-    }
+    try {
+      const [firstName, ...lastNameParts] = formData.name.split(" ")
+      const lastName = lastNameParts.join(" ") || firstName
+      
+      const response = await api.post<any>("/api/employees/", {
+        first_name: firstName,
+        last_name: lastName,
+        email: formData.email,
+        phone: formData.phone,
+        department: formData.department,
+        position: formData.position,
+        employee_id: formData.employeeId,
+        status: "active",
+      })
 
-    console.log("[v0] EmployeeManagementModule: Employee created", newEmployee)
-    setEmployees([...employees, newEmployee])
-    setFormData({ name: "", email: "", phone: "", department: "", position: "", employeeId: "" })
-    setShowForm(false)
+      if (response.error) {
+        console.error("[v0] EmployeeManagementModule: Error creating employee:", response.error)
+        return
+      }
+
+      // Refresh employee list
+      const fetchResponse = await api.get<any[]>("/api/employees/")
+      if (fetchResponse.data) {
+        const transformedEmployees = fetchResponse.data.map((emp: any) => ({
+          id: emp.id || emp.employee_id,
+          name: emp.first_name && emp.last_name 
+            ? `${emp.first_name} ${emp.last_name}` 
+            : emp.name || "Unknown",
+          email: emp.email,
+          phone: emp.phone || "",
+          department: emp.department || "Unknown",
+          position: emp.position || "Employee",
+          employeeId: emp.employee_id,
+          joinDate: emp.date_of_joining || new Date().toISOString().split("T")[0],
+          status: emp.status === "active" ? "active" : emp.status === "inactive" ? "inactive" : "on-leave",
+        }))
+        setEmployees(transformedEmployees)
+      }
+
+      setFormData({ name: "", email: "", phone: "", department: "", position: "", employeeId: "" })
+      setShowForm(false)
+    } catch (err) {
+      console.error("[v0] EmployeeManagementModule: Error creating employee:", err)
+    }
   }
 
-  const handleDelete = (id: string) => {
+  const handleDelete = async (id: string) => {
     console.log("[v0] EmployeeManagementModule: Deleting employee", id)
-    setEmployees(employees.filter((e) => e.id !== id))
+    try {
+      const response = await api.delete(`/api/employees/${id}`)
+      if (!response.error) {
+        setEmployees(employees.filter((e) => e.id !== id))
+      }
+    } catch (err) {
+      console.error("[v0] EmployeeManagementModule: Error deleting employee:", err)
+    }
   }
 
   const filteredEmployees = employees.filter((emp) => {
@@ -125,6 +167,28 @@ export default function EmployeeManagementModule({ onBack }: EmployeeManagementM
       default:
         return "bg-gray-100 text-gray-800"
     }
+  }
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center gap-4">
+          <Button onClick={onBack} variant="outline" size="icon">
+            <ArrowLeft size={20} />
+          </Button>
+          <h2 className="text-2xl font-bold text-foreground">Employee Management</h2>
+        </div>
+        <p className="text-red-500">{error}</p>
+      </div>
+    )
   }
 
   return (

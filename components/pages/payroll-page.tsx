@@ -1,10 +1,12 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { api } from "@/lib/api"
+import { Loader2 } from "lucide-react"
 
 interface PayrollRecord {
   employeeId: string
@@ -16,40 +18,53 @@ interface PayrollRecord {
   status: "draft" | "submitted" | "approved" | "processed"
 }
 
-const MOCK_PAYROLL: PayrollRecord[] = [
-  {
-    employeeId: "emp_001",
-    employeeName: "John Smith",
-    totalWorkingDays: 22,
-    payableDays: 21,
-    unpaidLeaves: 1,
-    netSalary: 4500,
-    status: "approved",
-  },
-  {
-    employeeId: "emp_002",
-    employeeName: "Sarah Johnson",
-    totalWorkingDays: 22,
-    payableDays: 22,
-    unpaidLeaves: 0,
-    netSalary: 5200,
-    status: "processed",
-  },
-  {
-    employeeId: "emp_004",
-    employeeName: "Emma Davis",
-    totalWorkingDays: 22,
-    payableDays: 20,
-    unpaidLeaves: 2,
-    netSalary: 3800,
-    status: "submitted",
-  },
-]
-
 export default function PayrollPage() {
-  const [payroll] = useState<PayrollRecord[]>(MOCK_PAYROLL)
+  const [payroll, setPayroll] = useState<PayrollRecord[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    const fetchPayroll = async () => {
+      try {
+        setIsLoading(true)
+        setError(null)
+        const response = await api.get<{ records: PayrollRecord[] }>("/api/payroll/records")
+        if (response.error) {
+          setError(response.error)
+        } else if (response.data) {
+          setPayroll(response.data.records || [])
+        }
+      } catch (err) {
+        console.error("[v0] PayrollPage: Error fetching payroll:", err)
+        setError("Failed to load payroll data")
+      } finally {
+        setIsLoading(false)
+      }
+    }
+
+    fetchPayroll()
+  }, [])
 
   console.log("[v0] PayrollPage: Rendered with", payroll.length, "records")
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-3xl font-bold text-foreground">Payroll</h1>
+          <p className="text-muted-foreground mt-1 text-red-500">{error}</p>
+        </div>
+      </div>
+    )
+  }
 
   const getStatusColor = (status: string) => {
     switch (status) {
