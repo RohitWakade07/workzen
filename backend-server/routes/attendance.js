@@ -1,5 +1,5 @@
 import express from "express";
-import pool from "../config/database"; // Your PostgreSQL connection pool
+import pool from "../config/database.js"; // Your PostgreSQL connection pool
 
 const router = express.Router();
 

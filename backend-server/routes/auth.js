@@ -1,7 +1,7 @@
 import express from "express";
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
-import pool from "../config/database"; // your PostgreSQL connection pool
+import pool from "../config/database.js"; // your PostgreSQL connection pool
 
 const router = express.Router();
 
@@ -50,8 +50,8 @@ router.post("/signup", async (req, res) => {
       return res.status(400).json({ detail: "User already exists" });
     }
 
-    // Hash password
-    const hashedPassword = await bcrypt.hash(password, 10);
+  // Hash password (bcryptjs sync)
+  const hashedPassword = bcrypt.hashSync(password, 10);
 
     // Create new user
     const userResult = await pool.query(
@@ -101,7 +101,8 @@ router.post("/login", async (req, res) => {
     }
 
     const user = result.rows[0];
-    const validPassword = await bcrypt.compare(password, user.password);
+  // Compare password (bcryptjs sync)
+  const validPassword = bcrypt.compareSync(password, user.password);
     if (!validPassword) {
       console.log(`[v0] Login failed - invalid password for: ${email}`);
       return res.status(401).json({ detail: "Invalid email or password" });

@@ -15,20 +15,39 @@ async function apiRequest<T>(
 ): Promise<ApiResponse<T>> {
   try {
     const url = `${API_BASE_URL}${endpoint}`
+
+    // Only set Content-Type for requests that have a body (not GET/HEAD).
+    const method = (options.method || "GET").toUpperCase()
+    const headers: Record<string, string> = {
+      ...(options.headers as Record<string, string> | undefined),
+    }
+    if (method !== "GET" && method !== "HEAD") {
+      headers["Content-Type"] = "application/json"
+    }
+
     const response = await fetch(url, {
       ...options,
-      headers: {
-        "Content-Type": "application/json",
-        ...options.headers,
-      },
+      method,
+      headers,
     })
 
     if (!response.ok) {
-      const errorData = await response.json().catch(() => ({ detail: response.statusText }))
-      throw new Error(errorData.detail || `HTTP error! status: ${response.status}`)
+      // Try to read JSON error body, otherwise fall back to text/status
+      const bodyText = await response.text().catch(() => response.statusText)
+      let detail = response.statusText
+      try {
+        const json = JSON.parse(bodyText)
+        detail = json.detail || json.message || bodyText
+      } catch (e) {
+        detail = bodyText || response.statusText
+      }
+
+      throw new Error(detail || `HTTP error! status: ${response.status}`)
     }
 
-    const data = await response.json()
+    // Parse JSON response safely
+    const text = await response.text()
+    const data = text ? JSON.parse(text) : {}
     return { data }
   } catch (error) {
     console.error(`[API] Error fetching ${endpoint}:`, error)
