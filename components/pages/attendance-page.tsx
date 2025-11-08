@@ -9,6 +9,7 @@ import { useAuth } from "@/lib/auth-context"
 import { Loader2 } from "lucide-react"
 
 interface AttendanceRecord {
+  id: number
   employeeId: string
   employeeName: string
   checkInTime: string
@@ -80,6 +81,12 @@ export default function AttendancePage({ role }: AttendancePageProps) {
 
   console.log("[v0] AttendancePage: Rendered for role", role)
 
+  const todayLabel = new Date().toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  })
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -93,7 +100,7 @@ export default function AttendancePage({ role }: AttendancePageProps) {
       <div className="space-y-6">
         <div>
           <h1 className="text-3xl font-bold text-foreground">Attendance</h1>
-          <p className="text-muted-foreground mt-1 text-red-500">{error}</p>
+          <p className="mt-1 text-sm text-red-500">{error}</p>
         </div>
       </div>
     )
@@ -137,7 +144,7 @@ export default function AttendancePage({ role }: AttendancePageProps) {
             </TableHeader>
             <TableBody>
               {attendance.map((record) => (
-                <TableRow key={`${record.employeeId}-${record.date}`}>
+                <TableRow key={`attendance-${record.id}`}>
                   <TableCell>{record.date}</TableCell>
                   <TableCell>{record.checkInTime}</TableCell>
                   <TableCell>{record.checkOutTime}</TableCell>
@@ -194,7 +201,7 @@ export default function AttendancePage({ role }: AttendancePageProps) {
       </div>
 
       <Card className="p-6">
-        <h2 className="font-semibold mb-4">Today's Attendance - January 8, 2025</h2>
+        <h2 className="font-semibold mb-4">Today's Attendance - {todayLabel}</h2>
         <Table>
           <TableHeader>
             <TableRow>
@@ -208,7 +215,7 @@ export default function AttendancePage({ role }: AttendancePageProps) {
           </TableHeader>
           <TableBody>
             {attendance.map((record) => (
-              <TableRow key={record.employeeId}>
+              <TableRow key={`attendance-${record.id}`}>
                 <TableCell className="font-medium">{record.employeeName}</TableCell>
                 <TableCell>{record.checkInTime}</TableCell>
                 <TableCell>{record.checkOutTime}</TableCell>

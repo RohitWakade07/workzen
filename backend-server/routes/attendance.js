@@ -66,6 +66,7 @@ function mapAttendanceRow(row) {
   const employeeName = nameParts.length > 0 ? nameParts.join(" ").trim() : row.employee_name || row.employee_code || "Unknown"
 
   return {
+    id: row.id,
     employeeId: row.employee_code || row.employee_id,
     employeeName,
     checkInTime: formatTime(row.check_in_time),
