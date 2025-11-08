@@ -2,6 +2,7 @@
 
 import type React from "react"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
 import { useAuth, type UserRole } from "@/lib/auth-context"
 import { Users, Clock, FileText, DollarSign, BarChart3, Settings, LogOut } from "lucide-react"
 
@@ -43,7 +44,13 @@ const MENU_ITEMS: Record<UserRole, Array<{ icon: React.ReactNode; label: string;
 
 export default function Sidebar({ isOpen, role, currentPage, onLinkClick }: SidebarProps) {
   const { logout } = useAuth()
+  const router = useRouter()
   const menuItems = MENU_ITEMS[role].filter((item) => item.roles.includes(role))
+
+  const handleLogout = () => {
+    logout()
+    router.push("/login")
+  }
 
   console.log(
     "[v0] Sidebar: Rendering for role",
@@ -92,7 +99,7 @@ export default function Sidebar({ isOpen, role, currentPage, onLinkClick }: Side
       {/* Logout Button */}
       <div className="p-4 border-t border-sidebar-border">
         <button
-          onClick={logout}
+          onClick={handleLogout}
           className="w-full flex items-center gap-3 px-4 py-3 rounded-lg hover:bg-destructive/10 hover:text-destructive transition-colors"
           title={!isOpen ? "Logout" : undefined}
         >

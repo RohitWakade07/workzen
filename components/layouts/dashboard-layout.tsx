@@ -14,9 +14,10 @@ import TimeOffView from "@/components/pages/time-off-page"
 import PayrollView from "@/components/pages/payroll-page"
 import ReportsPage from "@/components/pages/reports-page"
 import SettingsPage from "@/components/pages/settings-page"
+import ProfilePage from "@/components/pages/profile-page"
 
 export default function DashboardLayout() {
-  const { user, logout } = useAuth()
+  const { user, logout, isLoading } = useAuth()
   const router = useRouter()
   const pathname = usePathname()
   const isMobile = useIsMobile()
@@ -33,8 +34,24 @@ export default function DashboardLayout() {
 
   console.log("[v0] DashboardLayout: Current pathname", pathname, "User role", user?.role)
 
+  useEffect(() => {
+    if (!user && !isLoading) {
+      router.push("/login")
+    }
+  }, [user, isLoading, router])
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-background">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-8 h-8 border-4 border-muted border-t-primary rounded-full animate-spin" />
+          <p className="text-muted-foreground">Loading...</p>
+        </div>
+      </div>
+    )
+  }
+
   if (!user) {
-    router.push("/login")
     return null
   }
 
@@ -98,6 +115,11 @@ export default function DashboardLayout() {
         return <SettingsPage />
       }
       return <div className="text-center py-8">You don't have access to this page</div>
+    }
+
+    // Profile page
+    if (pathname === "/profile") {
+      return <ProfilePage />
     }
 
     // Default: show dashboard based on role

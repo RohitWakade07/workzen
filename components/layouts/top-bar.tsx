@@ -1,5 +1,6 @@
 "use client"
 import { useState } from "react"
+import { useRouter } from "next/navigation"
 import type { User } from "@/lib/auth-context"
 import { Menu, LogOut } from "lucide-react"
 import {
@@ -25,8 +26,14 @@ const ROLE_LABELS: Record<string, string> = {
 }
 
 export default function TopBar({ onToggleSidebar, user, onLogout }: TopBarProps) {
+  const router = useRouter()
   const [isCheckedIn, setIsCheckedIn] = useState(false)
   const [statusDot, setStatusDot] = useState<"green" | "yellow" | "grey">("grey")
+
+  const handleLogout = () => {
+    onLogout()
+    router.push("/login")
+  }
 
   const handleCheckIn = () => {
     console.log("[v0] TopBar: Check-in initiated")
@@ -123,9 +130,9 @@ export default function TopBar({ onToggleSidebar, user, onLogout }: TopBarProps)
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            <DropdownMenuItem>My Profile</DropdownMenuItem>
+            <DropdownMenuItem onClick={() => router.push("/profile")}>My Profile</DropdownMenuItem>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={onLogout} className="text-destructive">
+            <DropdownMenuItem onClick={handleLogout} className="text-destructive">
               <LogOut size={16} className="mr-2" />
               Logout
             </DropdownMenuItem>

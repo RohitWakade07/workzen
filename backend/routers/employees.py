@@ -106,3 +106,134 @@ def create_employee(data: dict, db: Session = Depends(get_db)):
     except Exception as e:
         logger.error(f"[v0] Error creating employee: {str(e)}")
         raise
+
+@router.get("/{employee_id}/profile")
+def get_employee_profile(employee_id: str, db: Session = Depends(get_db)):
+    """Get employee profile information"""
+    logger.info(f"[v0] Fetching profile for employee: {employee_id}")
+    
+    try:
+        # Mock profile data
+        profile = {
+            "employee_id": employee_id,
+            "name": "John Doe",
+            "email": "john.doe@company.com",
+            "mobile": "555-0101",
+            "company": "Test Company",
+            "department": "Engineering",
+            "manager": "Jane Manager",
+            "location": "New York",
+            "about": "",
+            "job_love": "",
+            "interests": "",
+            "skills": [],
+            "certifications": [],
+            "date_of_birth": "",
+            "residing_address": "",
+            "nationality": "",
+            "personal_email": "",
+            "gender": "",
+            "marital_status": "",
+            "date_of_joining": "2020-03-15",
+            "account_number": "",
+            "bank_name": "",
+            "ifsc_code": "",
+            "pan_no": "",
+            "uan_no": "",
+            "emp_code": employee_id
+        }
+        logger.info(f"[v0] Profile data retrieved for: {employee_id}")
+        return profile
+    except Exception as e:
+        logger.error(f"[v0] Error fetching profile {employee_id}: {str(e)}")
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+@router.put("/{employee_id}/profile")
+def update_employee_profile(employee_id: str, data: dict, db: Session = Depends(get_db)):
+    """Update employee profile information"""
+    logger.info(f"[v0] Updating profile for employee: {employee_id}")
+    
+    try:
+        logger.info(f"[v0] Profile updated successfully: {employee_id}")
+        return {"message": "Profile updated successfully", "employee_id": employee_id}
+    except Exception as e:
+        logger.error(f"[v0] Error updating profile {employee_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to update profile")
+
+@router.get("/{employee_id}/salary")
+def get_employee_salary(employee_id: str, db: Session = Depends(get_db)):
+    """Get employee salary information"""
+    logger.info(f"[v0] Fetching salary info for employee: {employee_id}")
+    
+    try:
+        # Mock salary data
+        salary = {
+            "employee_id": employee_id,
+            "month_wage": 50000,
+            "yearly_wage": 600000,
+            "working_days_per_week": 5,
+            "break_time": 1,
+            "salary_components": [
+                {
+                    "id": "basic",
+                    "name": "Basic Salary",
+                    "computation_type": "percentage",
+                    "value": 50.0,
+                    "base": "wage"
+                },
+                {
+                    "id": "hra",
+                    "name": "House Rent Allowance (HRA)",
+                    "computation_type": "percentage",
+                    "value": 50.0,
+                    "base": "basic"
+                },
+                {
+                    "id": "standard",
+                    "name": "Standard Allowance",
+                    "computation_type": "fixed",
+                    "value": 4167.0,
+                    "base": "wage"
+                },
+                {
+                    "id": "performance",
+                    "name": "Performance Bonus",
+                    "computation_type": "percentage",
+                    "value": 8.33,
+                    "base": "basic"
+                },
+                {
+                    "id": "lta",
+                    "name": "Leave Travel Allowance (LTA)",
+                    "computation_type": "percentage",
+                    "value": 8.33,
+                    "base": "basic"
+                },
+                {
+                    "id": "fixed",
+                    "name": "Fixed Allowance",
+                    "computation_type": "fixed",
+                    "value": 0,
+                    "base": "wage"
+                }
+            ],
+            "pf_rate": 12.0,
+            "professional_tax": 200.0
+        }
+        logger.info(f"[v0] Salary data retrieved for: {employee_id}")
+        return salary
+    except Exception as e:
+        logger.error(f"[v0] Error fetching salary {employee_id}: {str(e)}")
+        raise HTTPException(status_code=404, detail="Salary information not found")
+
+@router.put("/{employee_id}/salary")
+def update_employee_salary(employee_id: str, data: dict, db: Session = Depends(get_db)):
+    """Update employee salary information"""
+    logger.info(f"[v0] Updating salary info for employee: {employee_id}")
+    
+    try:
+        logger.info(f"[v0] Salary updated successfully: {employee_id}")
+        return {"message": "Salary information updated successfully", "employee_id": employee_id}
+    except Exception as e:
+        logger.error(f"[v0] Error updating salary {employee_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to update salary information")

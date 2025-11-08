@@ -163,6 +163,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     console.log("[v0] Auth: Logout initiated")
     setUser(null)
     localStorage.removeItem("auth_user")
+    // Redirect will be handled by the component using logout
   }
 
   return (
