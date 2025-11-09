@@ -20,9 +20,10 @@ async function findEmployeeByIdentifier(identifier) {
 
   const result = await pool.query(
     `
-      SELECT id, employee_id, first_name, last_name
-      FROM employees
-      WHERE employee_id = $1 OR id::text = $1
+      SELECT e.id, e.employee_id, u.first_name, u.last_name
+      FROM employees e
+      JOIN users u ON u.id = e.user_id
+      WHERE e.employee_id = $1 OR e.id::text = $1
       LIMIT 1
     `,
     [identifier]
@@ -81,9 +82,10 @@ function mapAttendanceRow(row) {
 async function loadAttendanceRecordById(id) {
   const query = await pool.query(
     `
-      SELECT ar.*, e.employee_id AS employee_code, e.first_name, e.last_name
+      SELECT ar.*, e.employee_id AS employee_code, u.first_name, u.last_name
       FROM attendance_records ar
       LEFT JOIN employees e ON e.id = ar.employee_id
+      LEFT JOIN users u ON u.id = e.user_id
       WHERE ar.id = $1
       LIMIT 1
     `,
@@ -114,44 +116,78 @@ router.post("/check-in", async (req, res) => {
 
     const today = new Date().toISOString().split("T")[0]
 
-    const existing = await pool.query(
+    // Check if there's an open session (no checkout) for today
+    const openSession = await pool.query(
       `
-        SELECT id
+        SELECT id, check_in_time
         FROM attendance_records
-        WHERE employee_id = $1 AND DATE(check_in_time) = $2::date
-        ORDER BY check_in_time ASC
+        WHERE employee_id = $1 AND date = $2::date AND check_out_time IS NULL
+        ORDER BY check_in_time DESC
         LIMIT 1
       `,
       [employee.id, today]
     )
 
-    let recordId
+    if (openSession.rowCount > 0) {
+      // Employee already has an open session - return error
+      return res.status(400).json({ 
+        detail: "You already have an open check-in session. Please check out first before starting a new session.",
+        openSessionId: openSession.rows[0].id,
+        checkInTime: formatTime(openSession.rows[0].check_in_time)
+      })
+    }
 
-    if (existing.rowCount > 0) {
-      const updated = await pool.query(
-        `
-          UPDATE attendance_records
-          SET check_in_time = NOW(), status = 'present', updated_at = NOW()
-          WHERE id = $1
-          RETURNING id
-        `,
-        [existing.rows[0].id]
+    // Always create a new session record
+    const inserted = await pool.query(
+      `
+        INSERT INTO attendance_records (employee_id, date, check_in_time, status)
+        VALUES ($1, $2::date, NOW(), 'present')
+        RETURNING id
+      `,
+      [employee.id, today]
+    )
+    const recordId = inserted.rows[0].id
+    
+    console.log(`[v0] Attendance: Created new check-in session for employee ${employeeId}`)
+
+    // Create notification for HR and Admin
+    try {
+      // Count existing sessions to determine if this is first check-in of the day
+      const sessionCount = await pool.query(
+        `SELECT COUNT(*) as count FROM attendance_records WHERE employee_id = $1 AND date = $2::date`,
+        [employee.id, today]
       )
-      recordId = updated.rows[0].id
-    } else {
-      const inserted = await pool.query(
+      
+      const isFirstSession = sessionCount.rows[0].count === '1'
+      const notificationMessage = isFirstSession
+        ? `${employee.first_name} ${employee.last_name} (${employee.employee_id}) has checked in at ${new Date().toLocaleTimeString()}`
+        : `${employee.first_name} ${employee.last_name} (${employee.employee_id}) started a new session at ${new Date().toLocaleTimeString()}`
+
+      await pool.query(
         `
-          INSERT INTO attendance_records (employee_id, check_in_time, status)
-          VALUES ($1, NOW(), 'present')
-          RETURNING id
+          INSERT INTO notifications (user_id, title, message, type, reference_id, reference_type)
+          SELECT u.id, $1, $2, 'attendance', $3, 'attendance_record'
+          FROM users u
+          WHERE u.role IN ('hr_officer', 'admin')
         `,
-        [employee.id]
+        [
+          isFirstSession ? "Employee Checked In" : "Employee Started New Session",
+          notificationMessage,
+          recordId,
+        ]
       )
-      recordId = inserted.rows[0].id
+      console.log(`[v0] Attendance: Notifications sent to HR/Admin for check-in`)
+    } catch (notifError) {
+      // Don't fail the check-in if notification fails
+      console.warn("[v0] Attendance: Failed to create notifications", notifError)
     }
 
     const joined = await loadAttendanceRecordById(recordId)
-    res.json({ message: "Check-in recorded successfully", record: mapAttendanceRow(joined) })
+    res.json({ 
+      message: "Check-in recorded successfully", 
+      record: mapAttendanceRow(joined),
+      isNewSession: true
+    })
   } catch (error) {
     if (error.code === PG_UNDEFINED_TABLE) {
       console.warn("[v0] Attendance: attendance_records table missing during check-in")
@@ -184,38 +220,83 @@ router.post("/check-out", async (req, res) => {
 
     const today = new Date().toISOString().split("T")[0]
 
-    const existing = await pool.query(
+    // Find the most recent open session (no check_out_time) for today
+    const openSession = await pool.query(
       `
         SELECT id, check_in_time
         FROM attendance_records
-        WHERE employee_id = $1 AND DATE(check_in_time) = $2::date
-        ORDER BY check_in_time ASC
+        WHERE employee_id = $1 AND date = $2::date AND check_out_time IS NULL
+        ORDER BY check_in_time DESC
         LIMIT 1
       `,
       [employee.id, today]
     )
 
-    if (existing.rowCount === 0) {
-      return res.status(404).json({ detail: "Check-in record not found for today" })
+    if (openSession.rowCount === 0) {
+      return res.status(404).json({ detail: "No open check-in session found for today. Please check in first." })
     }
 
-    const existingRow = existing.rows[0]
-    const checkInTime = existingRow.check_in_time ? new Date(existingRow.check_in_time) : new Date()
+    const sessionRow = openSession.rows[0]
+
+    // Calculate hours worked for this session
+    const checkInTime = sessionRow.check_in_time ? new Date(sessionRow.check_in_time) : new Date()
     const now = new Date()
     const hoursWorked = Math.max(0, (now.getTime() - checkInTime.getTime()) / (1000 * 60 * 60))
 
+    // Update the open session with check-out time
     const updated = await pool.query(
       `
         UPDATE attendance_records
-        SET check_out_time = NOW(), hours_worked = $2, updated_at = NOW()
+        SET check_out_time = NOW(), 
+            hours_worked = $2, 
+            updated_at = NOW()
         WHERE id = $1
         RETURNING id
       `,
-      [existingRow.id, Number(hoursWorked.toFixed(2))]
+      [sessionRow.id, Number(hoursWorked.toFixed(2))]
     )
 
+    console.log(`[v0] Attendance: Check-out recorded for employee ${employeeId}, session hours: ${hoursWorked.toFixed(2)}`)
+
+    // Calculate total hours for the day across all sessions
+    const totalHoursResult = await pool.query(
+      `
+        SELECT COALESCE(SUM(hours_worked), 0) as total_hours
+        FROM attendance_records
+        WHERE employee_id = $1 AND date = $2::date AND check_out_time IS NOT NULL
+      `,
+      [employee.id, today]
+    )
+    const totalDailyHours = Number(totalHoursResult.rows[0].total_hours)
+
+    // Create notification for HR, Admin, and Payroll officers
+    try {
+      await pool.query(
+        `
+          INSERT INTO notifications (user_id, title, message, type, reference_id, reference_type)
+          SELECT u.id, $1, $2, 'attendance', $3, 'attendance_record'
+          FROM users u
+          WHERE u.role IN ('hr_officer', 'admin', 'payroll_officer')
+        `,
+        [
+          "Employee Checked Out",
+          `${employee.first_name} ${employee.last_name} (${employee.employee_id}) checked out. Session: ${hoursWorked.toFixed(2)}h | Total today: ${totalDailyHours.toFixed(2)}h`,
+          updated.rows[0].id,
+        ]
+      )
+      console.log(`[v0] Attendance: Notifications sent to HR/Admin/Payroll for check-out`)
+    } catch (notifError) {
+      // Don't fail the check-out if notification fails
+      console.warn("[v0] Attendance: Failed to create notifications", notifError)
+    }
+
     const joined = await loadAttendanceRecordById(updated.rows[0].id)
-    res.json({ message: "Check-out recorded successfully", record: mapAttendanceRow(joined) })
+    res.json({ 
+      message: "Check-out recorded successfully", 
+      record: mapAttendanceRow(joined),
+      sessionHours: Number(hoursWorked.toFixed(2)),
+      totalDailyHours: Number(totalDailyHours.toFixed(2))
+    })
   } catch (error) {
     if (error.code === PG_UNDEFINED_TABLE) {
       console.warn("[v0] Attendance: attendance_records table missing during check-out")
@@ -236,26 +317,87 @@ router.get("/", async (req, res) => {
 
   try {
     const today = new Date().toISOString().split("T")[0]
-    const result = await pool.query(
+    
+    // Get all sessions for today
+    const sessionsResult = await pool.query(
       `
-        SELECT ar.*, e.employee_id AS employee_code, e.first_name, e.last_name
+        SELECT ar.*, e.employee_id AS employee_code, u.first_name, u.last_name
         FROM attendance_records ar
         LEFT JOIN employees e ON e.id = ar.employee_id
-        WHERE DATE(ar.check_in_time) = $1::date
-        ORDER BY ar.check_in_time DESC NULLS LAST
+        LEFT JOIN users u ON u.id = e.user_id
+        WHERE ar.date = $1::date
+        ORDER BY e.employee_id, ar.check_in_time ASC
       `,
       [today]
     )
 
-    const mapped = result.rows.map((row) => mapAttendanceRow(row))
+    // Get aggregated data per employee
+    const aggregatedResult = await pool.query(
+      `
+        SELECT 
+          e.id as employee_db_id,
+          e.employee_id AS employee_code,
+          u.first_name,
+          u.last_name,
+          COUNT(*) as session_count,
+          COALESCE(SUM(ar.hours_worked), 0) as total_hours,
+          MIN(ar.check_in_time) as first_check_in,
+          MAX(ar.check_out_time) as last_check_out,
+          COUNT(CASE WHEN ar.check_out_time IS NULL THEN 1 END) as open_sessions,
+          ARRAY_AGG(
+            json_build_object(
+              'id', ar.id,
+              'checkIn', ar.check_in_time,
+              'checkOut', ar.check_out_time,
+              'hours', ar.hours_worked
+            ) ORDER BY ar.check_in_time
+          ) as sessions
+        FROM attendance_records ar
+        LEFT JOIN employees e ON e.id = ar.employee_id
+        LEFT JOIN users u ON u.id = e.user_id
+        WHERE ar.date = $1::date
+        GROUP BY e.id, e.employee_id, u.first_name, u.last_name
+        ORDER BY u.last_name, u.first_name
+      `,
+      [today]
+    )
+
+    // Map individual session records
+    const allSessions = sessionsResult.rows.map((row) => mapAttendanceRow(row))
+    
+    // Map aggregated employee data
+    const employeeSummaries = aggregatedResult.rows.map((row) => {
+      const nameParts = [row.first_name, row.last_name].filter(Boolean)
+      const employeeName = nameParts.length > 0 ? nameParts.join(" ").trim() : "Unknown"
+      
+      return {
+        employeeId: row.employee_code,
+        employeeName,
+        sessionCount: Number(row.session_count),
+        totalHours: Number(row.total_hours || 0),
+        firstCheckIn: formatTime(row.first_check_in),
+        lastCheckOut: formatTime(row.last_check_out),
+        hasOpenSession: row.open_sessions > 0,
+        status: row.open_sessions > 0 ? 'checked_in' : 'checked_out',
+        sessions: row.sessions
+      }
+    })
+
     const stats = {
-      presentToday: mapped.filter((r) => r.status === "present").length,
-      absent: mapped.filter((r) => r.status === "absent").length,
-      onLeave: mapped.filter((r) => r.status === "on_leave").length,
-      halfDay: mapped.filter((r) => r.status === "half_day").length,
+      totalEmployees: aggregatedResult.rowCount,
+      currentlyCheckedIn: employeeSummaries.filter((e) => e.hasOpenSession).length,
+      totalSessions: sessionsResult.rowCount,
+      presentToday: employeeSummaries.length,
+      absent: 0, // Would need to query all employees to calculate
+      onLeave: 0,
+      halfDay: 0,
     }
 
-    res.json({ records: mapped, stats })
+    res.json({ 
+      records: allSessions,  // All individual sessions
+      employeeSummaries,      // Aggregated data per employee
+      stats 
+    })
   } catch (error) {
     if (error.code === PG_UNDEFINED_TABLE) {
       console.warn("[v0] Attendance: attendance_records table missing during fetch")
@@ -281,25 +423,79 @@ router.get("/:emp_id", async (req, res) => {
       return res.status(404).json({ detail: "Employee not found" })
     }
 
-    const result = await pool.query(
+    // Get all sessions for this employee
+    const sessionsResult = await pool.query(
       `
-        SELECT ar.*, e.employee_id AS employee_code, e.first_name, e.last_name
+        SELECT ar.*, e.employee_id AS employee_code, u.first_name, u.last_name
         FROM attendance_records ar
         LEFT JOIN employees e ON e.id = ar.employee_id
+        LEFT JOIN users u ON u.id = e.user_id
         WHERE ar.employee_id = $1
-        ORDER BY ar.check_in_time DESC NULLS LAST
+        ORDER BY ar.date DESC, ar.check_in_time ASC
       `,
       [employee.id]
     )
 
-    const mapped = result.rows.map((row) => mapAttendanceRow(row))
+    // Get daily summaries
+    const dailySummaries = await pool.query(
+      `
+        SELECT 
+          ar.date,
+          COUNT(*) as session_count,
+          COALESCE(SUM(ar.hours_worked), 0) as total_hours,
+          MIN(ar.check_in_time) as first_check_in,
+          MAX(ar.check_out_time) as last_check_out,
+          COUNT(CASE WHEN ar.check_out_time IS NULL THEN 1 END) as open_sessions,
+          ARRAY_AGG(
+            json_build_object(
+              'id', ar.id,
+              'checkIn', ar.check_in_time,
+              'checkOut', ar.check_out_time,
+              'hours', ar.hours_worked,
+              'status', ar.status
+            ) ORDER BY ar.check_in_time
+          ) as sessions
+        FROM attendance_records ar
+        WHERE ar.employee_id = $1
+        GROUP BY ar.date
+        ORDER BY ar.date DESC
+      `,
+      [employee.id]
+    )
+
+    // Map all individual sessions
+    const allSessions = sessionsResult.rows.map((row) => mapAttendanceRow(row))
+    
+    // Map daily summaries
+    const dailyRecords = dailySummaries.rows.map((row) => ({
+      date: toIsoDate(row.date),
+      sessionCount: Number(row.session_count),
+      totalHours: Number(row.total_hours || 0),
+      firstCheckIn: formatTime(row.first_check_in),
+      lastCheckOut: formatTime(row.last_check_out),
+      hasOpenSession: row.open_sessions > 0,
+      status: row.open_sessions > 0 ? 'in_progress' : 'completed',
+      sessions: row.sessions
+    }))
+
+    // Calculate overall stats
     const stats = {
-      totalDaysPresent: mapped.filter((r) => r.status === "present").length,
-      pendingApprovals: 0,
-      totalWorkHours: mapped.reduce((sum, r) => sum + Number(r.workHours || 0), 0),
+      totalDays: dailySummaries.rowCount,
+      totalSessions: sessionsResult.rowCount,
+      totalWorkHours: allSessions.reduce((sum, r) => sum + Number(r.workHours || 0), 0),
+      averageHoursPerDay: dailySummaries.rowCount > 0 
+        ? (allSessions.reduce((sum, r) => sum + Number(r.workHours || 0), 0) / dailySummaries.rowCount).toFixed(2)
+        : 0,
+      daysWithMultipleSessions: dailyRecords.filter(d => d.sessionCount > 1).length,
+      currentOpenSessions: dailyRecords[0]?.hasOpenSession ? 1 : 0
     }
 
-    res.json({ employee_id: employee.employee_id, records: mapped, stats })
+    res.json({ 
+      employee_id: employee.employee_id,
+      records: allSessions,        // All individual sessions
+      dailyRecords,                // Aggregated by day
+      stats 
+    })
   } catch (error) {
     if (error.code === PG_UNDEFINED_TABLE) {
       console.warn("[v0] Attendance: attendance_records table missing during fetch by employee")

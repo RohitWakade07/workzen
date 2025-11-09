@@ -1,22 +1,127 @@
 import express from "express"
 import bcrypt from "bcryptjs"
 import pool from "../config/database.js"
+import { authenticateToken, requireHROrAdmin, canManageEmployee, filterEmployeesByRole } from "../middleware/auth.js"
 
 const router = express.Router()
 const PG_UNDEFINED_TABLE = "42P01"
 const VALID_EMPLOYEE_STATUSES = new Set(["active", "inactive", "on-leave"])
 
-async function ensureDepartment(department) {
+/**
+ * Generate employee login ID in format: [CompanyCode][FirstName2][LastName2][Year][SerialNumber]
+ * Example: OIJODO20220001
+ * - OI: First 2 letters of company name (e.g., "Odoo India")
+ * - JO: First 2 letters of first name (e.g., "John")
+ * - DO: First 2 letters of last name (e.g., "Doe")
+ * - 2022: Year of joining
+ * - 0001: Serial number for that year
+ */
+async function generateEmployeeId(companyId, firstName, lastName, yearOfJoining) {
+  try {
+    // Get company name
+    const companyResult = await pool.query('SELECT name FROM companies WHERE id = $1', [companyId])
+    if (companyResult.rows.length === 0) {
+      throw new Error('Company not found')
+    }
+    
+    const companyName = companyResult.rows[0].name
+    
+    // Extract first 2 letters of company name (uppercase, remove spaces)
+    const companyCode = companyName.replace(/\s+/g, '').substring(0, 2).toUpperCase()
+    
+    // Extract first 2 letters of first name and last name (uppercase)
+    const firstNameCode = firstName.substring(0, 2).toUpperCase()
+    const lastNameCode = lastName.substring(0, 2).toUpperCase()
+    
+    // Get year (default to current year if not provided)
+    const year = yearOfJoining || new Date().getFullYear()
+    
+    // Get the next serial number for this year and company
+    const serialResult = await pool.query(
+      `SELECT COUNT(*) as count 
+       FROM employees e
+       JOIN users u ON e.user_id = u.id
+       WHERE u.company_id = $1 
+       AND EXTRACT(YEAR FROM e.date_of_joining) = $2`,
+      [companyId, year]
+    )
+    
+    const serialNumber = (parseInt(serialResult.rows[0].count) + 1).toString().padStart(4, '0')
+    
+    // Construct the employee ID
+    const employeeId = `${companyCode}${firstNameCode}${lastNameCode}${year}${serialNumber}`
+    
+    console.log(`[v0] Generated employee ID: ${employeeId}`)
+    return employeeId
+    
+  } catch (error) {
+    console.error('[v0] Error generating employee ID:', error.message)
+    // Fallback to timestamp-based ID if generation fails
+    return `EMP-${Date.now()}-${Math.random().toString().slice(2, 6)}`
+  }
+}
+
+// Middleware to extract company_id from authenticated user
+async function extractCompanyId(req, res, next) {
+  try {
+    // Get company_id from authenticated user (set by authenticateToken middleware)
+    let companyId = req.user?.companyId || req.query.company_id || req.body.company_id
+    
+    if (!companyId && req.user?.id) {
+      // Try to get company_id from user's record
+      const userResult = await pool.query(
+        'SELECT company_id FROM users WHERE id = $1',
+        [req.user.id]
+      )
+      if (userResult.rows.length > 0 && userResult.rows[0].company_id) {
+        companyId = userResult.rows[0].company_id
+        console.log(`[v0] Extracted company ID from user: ${companyId}`)
+      }
+    }
+    
+    if (!companyId) {
+      // Get the first company as fallback (for development/testing)
+      const result = await pool.query('SELECT id FROM companies LIMIT 1')
+      if (result.rows.length === 0) {
+        return res.status(400).json({ 
+          detail: 'No company found. Please create a company first via signup.' 
+        })
+      }
+      companyId = result.rows[0].id
+      console.log(`[v0] Using default company ID: ${companyId}`)
+    }
+    
+    req.companyId = companyId
+    next()
+  } catch (error) {
+    console.error('[v0] Error extracting company ID:', error.message)
+    res.status(500).json({ detail: 'Failed to determine company context' })
+  }
+}
+
+async function ensureDepartment(department, companyId) {
   if (!department) {
     return null
   }
 
-  const lookup = await pool.query("SELECT id FROM departments WHERE LOWER(name) = LOWER($1) LIMIT 1", [department])
+  if (!companyId) {
+    throw new Error("Company ID is required to create or fetch departments")
+  }
+
+  const lookup = await pool.query(
+    "SELECT id FROM departments WHERE LOWER(name) = LOWER($1) AND company_id = $2 LIMIT 1",
+    [department, companyId]
+  )
+  
   if (lookup.rowCount > 0) {
     return lookup.rows[0].id
   }
 
-  const created = await pool.query("INSERT INTO departments (name, description) VALUES ($1, $2) RETURNING id", [department, `${department} department`])
+  const created = await pool.query(
+    "INSERT INTO departments (name, description, company_id) VALUES ($1, $2, $3) RETURNING id",
+    [department, `${department} department`, companyId]
+  )
+  
   return created.rows[0].id
 }
 
@@ -27,21 +132,21 @@ function mapEmployeeRow(row) {
 
   return {
     id: row.id,
-    employee_id: row.employee_id,
+    employeeId: row.employee_id,
+    name: `${row.first_name} ${row.last_name}`,
     first_name: row.first_name,
     last_name: row.last_name,
     email: row.email,
-    phone: row.phone,
+    phone: row.phone_number,
     department_id: row.department_id,
     department: row.department_name ?? row.department ?? null,
-    position: row.position,
+    designation: row.designation,
+    position: row.designation ?? row.position ?? null,
     employment_type: row.employment_type,
-  status: row.status ?? "active",
+    status: row.status ?? "active",
     date_of_joining: row.date_of_joining,
     date_of_birth: row.date_of_birth,
-    salary: row.salary,
-    bank_account: row.bank_account,
-    pan_number: row.pan_number,
+    role: row.role,
     created_at: row.created_at,
     updated_at: row.updated_at,
   }
@@ -54,8 +159,9 @@ async function findEmployeeRowByIdentifier(identifier) {
 
   const result = await pool.query(
     `
-      SELECT e.*, d.name AS department_name
+      SELECT e.*, u.email, u.first_name, u.last_name, u.role, d.name AS department_name
       FROM employees e
+      JOIN users u ON u.id = e.user_id
       LEFT JOIN departments d ON d.id = e.department_id
       WHERE e.employee_id = $1 OR e.id::text = $1
       LIMIT 1
@@ -223,17 +329,27 @@ function toNullable(value) {
  * ✅ GET /api/employees/
  * Fetch all employees
  */
-router.get("/", async (req, res) => {
-  console.log("[v0] Fetching employee list")
+router.get("/", authenticateToken, requireHROrAdmin, filterEmployeesByRole, async (req, res) => {
+  console.log(`[v0] Fetching employee list for user ${req.user.email} (${req.user.role})`)
   try {
-    const result = await pool.query(
-      `
-        SELECT e.*, d.name AS department_name
+    let query = `
+        SELECT e.*, u.email, u.first_name, u.last_name, u.role, d.name AS department_name
         FROM employees e
+        JOIN users u ON u.id = e.user_id
         LEFT JOIN departments d ON d.id = e.department_id
-        ORDER BY e.created_at DESC NULLS LAST
-      `
-    )
+    `
+    
+    const params = []
+    
+    // Apply role-based filtering
+    if (req.employeeRoleFilter && req.employeeRoleFilter !== 'self') {
+      query += ` WHERE u.role = $1`
+      params.push(req.employeeRoleFilter)
+    }
+    
+    query += ` ORDER BY e.created_at DESC NULLS LAST`
+
+    const result = await pool.query(query, params)
     console.log(`[v0] Returning ${result.rowCount} employees`)
     res.json(result.rows.map((row) => mapEmployeeRow(row)))
   } catch (error) {
@@ -253,10 +369,11 @@ router.get("/:employee_id", async (req, res) => {
   try {
     const result = await pool.query(
       `
-        SELECT e.*, d.name AS department_name
+        SELECT e.*, u.email, u.first_name, u.last_name, u.role, d.name AS department_name
         FROM employees e
+        JOIN users u ON u.id = e.user_id
         LEFT JOIN departments d ON d.id = e.department_id
-  WHERE e.employee_id = $1 OR e.id::text = $1
+        WHERE e.employee_id = $1 OR e.id::text = $1
         LIMIT 1
       `,
       [employee_id]
@@ -275,22 +392,24 @@ router.get("/:employee_id", async (req, res) => {
 
 /**
  * ✅ POST /api/employees/
- * Create a new employee
+ * Create a new employee (with auto-generated employee ID)
  */
-router.post("/", async (req, res) => {
+router.post("/", authenticateToken, requireHROrAdmin, canManageEmployee, extractCompanyId, async (req, res) => {
   const data = req.body
+  console.log(`[v0] Creating new employee by user ${req.user.email} (${req.user.role})`)
   console.log(`[v0] Creating new employee with payload:`, data)
+  console.log(`[v0] Using company ID: ${req.companyId}`)
 
+  const client = await pool.connect()
+  
   try {
-    const requiredFields = ["employee_id", "first_name", "last_name", "email", "department"]
+    await client.query('BEGIN')
+    
+    // Validate required fields (employee_id is now auto-generated)
+    const requiredFields = ["first_name", "last_name", "email", "role"]
     const missing = requiredFields.filter((field) => !data[field])
     if (missing.length > 0) {
       return res.status(400).json({ detail: `Missing required fields: ${missing.join(", ")}` })
-    }
-
-    const employeeCode = typeof data.employee_id === "string" ? data.employee_id.trim() : `${data.employee_id}`.trim()
-    if (employeeCode.length === 0) {
-      return res.status(400).json({ detail: "Employee ID cannot be empty" })
     }
 
     const email = typeof data.email === "string" ? data.email.trim().toLowerCase() : ""
@@ -298,73 +417,116 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ detail: "Email cannot be empty" })
     }
 
-    const departmentId = await ensureDepartment(data.department)
-    if (!departmentId) {
-      return res.status(400).json({ detail: "Invalid department" })
+    // Check if email already exists for this company
+    const emailCheck = await client.query(
+      'SELECT id FROM users WHERE LOWER(email) = LOWER($1) AND company_id = $2',
+      [email, req.companyId]
+    )
+    if (emailCheck.rows.length > 0) {
+      await client.query('ROLLBACK')
+      return res.status(400).json({ detail: "Email already exists in this company" })
     }
 
-    const statusValue = (data.status || "active").toLowerCase()
-    if (!VALID_EMPLOYEE_STATUSES.has(statusValue)) {
-      return res.status(400).json({ detail: "Invalid employment status" })
+    // Validate role
+    const validRoles = ['employee', 'hr_officer', 'payroll_officer', 'admin']
+    const role = data.role || 'employee'
+    if (!validRoles.includes(role)) {
+      await client.query('ROLLBACK')
+      return res.status(400).json({ detail: "Invalid role. Must be one of: employee, hr_officer, payroll_officer, admin" })
     }
 
-    const insertResult = await pool.query(
-      `
-        INSERT INTO employees (
-          employee_id,
-          first_name,
-          last_name,
-          email,
-          phone,
-          department_id,
-          position,
-          employment_type,
-          status,
-          date_of_joining,
-          date_of_birth,
-          salary,
-          bank_account,
-          pan_number
-        )
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-        RETURNING *
-      `,
+    // Determine year of joining
+    const dateOfJoining = data.date_of_joining || new Date().toISOString().split('T')[0]
+    const yearOfJoining = new Date(dateOfJoining).getFullYear()
+
+    // Generate employee ID
+    const employeeCode = await generateEmployeeId(
+      req.companyId,
+      data.first_name,
+      data.last_name,
+      yearOfJoining
+    )
+
+    // Default password is the employee ID
+    const hashedPassword = await bcrypt.hash(employeeCode, 10)
+
+    // Create user account with role
+    const userResult = await client.query(
+      `INSERT INTO users (email, password_hash, role, first_name, last_name, company_id, is_active)
+       VALUES ($1, $2, $3, $4, $5, $6, true)
+       RETURNING id`,
+      [email, hashedPassword, role, data.first_name, data.last_name, req.companyId]
+    )
+    const userId = userResult.rows[0].id
+
+    // Create employee record (department_id can be null now)
+    const employeeResult = await client.query(
+      `INSERT INTO employees (
+        user_id,
+        employee_id,
+        designation,
+        date_of_joining,
+        employment_type,
+        work_location,
+        date_of_birth,
+        phone_number,
+        address,
+        city,
+        state,
+        postal_code,
+        country
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+      RETURNING *`,
       [
+        userId,
         employeeCode,
-        data.first_name,
-        data.last_name,
-    email,
-        data.phone || null,
-        departmentId,
-        data.position || "Employee",
-        data.employment_type || "Full-time",
-  statusValue,
-        data.date_of_joining || new Date().toISOString().split("T")[0],
+        data.position || data.designation || 'Employee',
+        dateOfJoining,
+        data.employment_type || 'full-time',
+        data.work_location || null,
         data.date_of_birth || null,
-        data.salary || null,
-        data.bank_account || null,
-        data.pan_number || null,
+        data.phone || null,
+        data.address || null,
+        data.city || null,
+        data.state || null,
+        data.postal_code || null,
+        data.country || null
       ]
     )
 
-    const insertedRow = insertResult.rows[0]
+    await client.query('COMMIT')
 
-    try {
-      await syncEmployeeUserAccount(insertedRow, email, employeeCode, statusValue)
-    } catch (syncError) {
-      console.error(`[v0] Failed to sync user account for employee ${data.employee_id}:`, syncError.message)
-    }
+    const employee = employeeResult.rows[0]
+    
+    res.json({
+      message: "Employee created successfully",
+      employee: {
+        id: employee.id,
+        employee_id: employee.employee_id,
+        user_id: userId,
+        first_name: data.first_name,
+        last_name: data.last_name,
+        email: email,
+        department: data.department,
+        designation: employee.designation,
+        date_of_joining: employee.date_of_joining,
+        default_password: employeeCode, // Return for initial setup
+      }
+    })
 
-    const normalized = mapEmployeeRow({ ...insertedRow, department_name: data.department })
-    res.json({ message: "Employee created successfully", employee: normalized })
   } catch (error) {
+    await client.query('ROLLBACK')
+    
     if (error.code === "23505") {
       console.error("[v0] Employee creation failed - duplicate entry", error.detail)
       return res.status(400).json({ detail: "Employee with same ID or email already exists" })
     }
 
     console.error(`[v0] Error creating employee: ${error.message}`)
-    res.status(500).json({ detail: "Failed to create employee" })
+    res.status(500).json({ detail: `Failed to create employee: ${error.message}` })
+  } finally {
+    client.release()
   }
 })
 
@@ -392,190 +554,192 @@ router.delete("/:employee_id", async (req, res) => {
  * ✅ PUT /api/employees/:employee_id
  * Update core employee details
  */
-router.put("/:employee_id", async (req, res) => {
+router.put("/:employee_id", authenticateToken, requireHROrAdmin, canManageEmployee, extractCompanyId, async (req, res) => {
   const { employee_id } = req.params
   const data = req.body
+  console.log(`[v0] Updating employee ${employee_id} by user ${req.user.email} (${req.user.role})`)
   console.log(`[v0] Updating employee ${employee_id} with payload:`, data)
 
+  const client = await pool.connect()
   try {
-    const existingResult = await pool.query(
+    await client.query('BEGIN')
+
+    // Get existing employee with user info
+    const existingResult = await client.query(
       `
-        SELECT e.*, d.name AS department_name
+        SELECT e.*, u.id as user_id, u.email, u.first_name, u.last_name, u.role, d.name AS department_name
         FROM employees e
+        JOIN users u ON u.id = e.user_id
         LEFT JOIN departments d ON d.id = e.department_id
-  WHERE e.employee_id = $1 OR e.id::text = $1
+        WHERE e.employee_id = $1 OR e.id::text = $1
         LIMIT 1
       `,
       [employee_id]
     )
 
     if (existingResult.rowCount === 0) {
+      await client.query('ROLLBACK')
       return res.status(404).json({ detail: "Employee not found" })
     }
 
     const existing = existingResult.rows[0]
+    
+    // HR officers can only update employees with role "employee"
+    if (req.user.role === 'hr_officer' && existing.role !== 'employee') {
+      await client.query('ROLLBACK')
+      return res.status(403).json({ 
+        detail: `HR Officers can only update employees with role "employee". This employee has role: ${existing.role}` 
+      })
+    }
 
-    const updates = []
-    const params = []
+    // Prepare updates for users table
+    const userUpdates = []
+    const userParams = []
 
     if (data.first_name !== undefined) {
       const firstName = data.first_name?.trim()
       if (!firstName) {
+        await client.query('ROLLBACK')
         return res.status(400).json({ detail: "First name cannot be empty" })
       }
-
-      params.push(firstName)
-      updates.push(`first_name = $${params.length}`)
+      userParams.push(firstName)
+      userUpdates.push(`first_name = $${userParams.length}`)
     }
 
     if (data.last_name !== undefined) {
       const lastName = data.last_name?.trim()
       if (!lastName) {
+        await client.query('ROLLBACK')
         return res.status(400).json({ detail: "Last name cannot be empty" })
       }
-
-      params.push(lastName)
-      updates.push(`last_name = $${params.length}`)
+      userParams.push(lastName)
+      userUpdates.push(`last_name = $${userParams.length}`)
     }
 
     if (data.email !== undefined) {
       const email = data.email?.trim().toLowerCase()
       if (!email) {
+        await client.query('ROLLBACK')
         return res.status(400).json({ detail: "Email cannot be empty" })
       }
 
-      const duplicate = await pool.query(
-        `SELECT 1 FROM employees WHERE LOWER(email) = LOWER($1) AND id <> $2 LIMIT 1`,
-        [email, existing.id]
+      const duplicate = await client.query(
+        `SELECT 1 FROM users WHERE LOWER(email) = LOWER($1) AND id <> $2 AND company_id = $3 LIMIT 1`,
+        [email, existing.user_id, req.companyId]
       )
 
       if (duplicate.rowCount > 0) {
+        await client.query('ROLLBACK')
         return res.status(400).json({ detail: "Another employee already uses that email" })
       }
 
-      params.push(email)
-      updates.push(`email = $${params.length}`)
+      userParams.push(email)
+      userUpdates.push(`email = $${userParams.length}`)
     }
 
+    // Update users table if there are changes
+    if (userUpdates.length > 0) {
+      userParams.push(existing.user_id)
+      await client.query(
+        `UPDATE users 
+         SET ${userUpdates.join(", ")}, updated_at = NOW() 
+         WHERE id = $${userParams.length}`,
+        userParams
+      )
+    }
+
+    // Prepare updates for employees table
+    const empUpdates = []
+    const empParams = []
+
     if (data.phone !== undefined) {
-      params.push(toNullable(data.phone))
-      updates.push(`phone = $${params.length}`)
+      empParams.push(toNullable(data.phone))
+      empUpdates.push(`phone_number = $${empParams.length}`)
     }
 
     if (data.position !== undefined) {
       const position = data.position?.trim()
       if (!position) {
+        await client.query('ROLLBACK')
         return res.status(400).json({ detail: "Position cannot be empty" })
       }
-
-      params.push(position)
-      updates.push(`position = $${params.length}`)
+      empParams.push(position)
+      empUpdates.push(`designation = $${empParams.length}`)
     }
 
     if (data.employment_type !== undefined) {
-      params.push(toNullable(data.employment_type))
-      updates.push(`employment_type = $${params.length}`)
-    }
-
-    if (data.status !== undefined) {
-      const status = data.status?.trim().toLowerCase()
-      if (!status) {
-        return res.status(400).json({ detail: "Status cannot be empty" })
-      }
-
-      if (!VALID_EMPLOYEE_STATUSES.has(status)) {
-        return res.status(400).json({ detail: "Invalid employment status" })
-      }
-
-      params.push(status)
-      updates.push(`status = $${params.length}`)
+      empParams.push(toNullable(data.employment_type))
+      empUpdates.push(`employment_type = $${empParams.length}`)
     }
 
     if (data.date_of_joining !== undefined) {
-      params.push(toNullable(data.date_of_joining))
-      updates.push(`date_of_joining = $${params.length}`)
+      empParams.push(toNullable(data.date_of_joining))
+      empUpdates.push(`date_of_joining = $${empParams.length}`)
     }
 
     if (data.date_of_birth !== undefined) {
-      params.push(toNullable(data.date_of_birth))
-      updates.push(`date_of_birth = $${params.length}`)
-    }
-
-    if (data.salary !== undefined) {
-      params.push(toNullable(data.salary))
-      updates.push(`salary = $${params.length}`)
-    }
-
-    if (data.bank_account !== undefined) {
-      params.push(toNullable(data.bank_account))
-      updates.push(`bank_account = $${params.length}`)
-    }
-
-    if (data.pan_number !== undefined) {
-      params.push(toNullable(data.pan_number))
-      updates.push(`pan_number = $${params.length}`)
+      empParams.push(toNullable(data.date_of_birth))
+      empUpdates.push(`date_of_birth = $${empParams.length}`)
     }
 
     if (data.department !== undefined) {
       const departmentName = data.department?.trim()
       if (!departmentName) {
+        await client.query('ROLLBACK')
         return res.status(400).json({ detail: "Department cannot be empty" })
       }
 
-      const departmentId = await ensureDepartment(departmentName)
-      params.push(departmentId)
-      updates.push(`department_id = $${params.length}`)
+      const departmentId = await ensureDepartment(departmentName, req.companyId)
+      empParams.push(departmentId)
+      empUpdates.push(`department_id = $${empParams.length}`)
     }
 
-    if (updates.length === 0) {
+    // Update employees table if there are changes
+    if (empUpdates.length > 0) {
+      empParams.push(existing.id)
+      await client.query(
+        `UPDATE employees 
+         SET ${empUpdates.join(", ")}, updated_at = NOW() 
+         WHERE id = $${empParams.length}`,
+        empParams
+      )
+    }
+
+    if (userUpdates.length === 0 && empUpdates.length === 0) {
+      await client.query('ROLLBACK')
       return res.status(400).json({ detail: "No updatable fields provided" })
     }
 
-    params.push(existing.employee_id)
+    await client.query('COMMIT')
 
-    await pool.query(
-      `
-  UPDATE employees
-  SET ${updates.join(", ")}, updated_at = NOW()
-  WHERE employee_id = $${params.length} OR id::text = $${params.length}
-      `,
-      params
-    )
+    await client.query('COMMIT')
 
-    const refreshed = await pool.query(
+    // Fetch the updated employee with user info
+    const refreshed = await client.query(
       `
-        SELECT e.*, d.name AS department_name
+        SELECT e.*, u.email, u.first_name, u.last_name, d.name AS department_name
         FROM employees e
+        JOIN users u ON u.id = e.user_id
         LEFT JOIN departments d ON d.id = e.department_id
-  WHERE e.employee_id = $1 OR e.id::text = $1
+        WHERE e.employee_id = $1 OR e.id::text = $1
         LIMIT 1
       `,
       [employee_id]
     )
     const refreshedRow = refreshed.rows[0]
 
-    try {
-      await syncEmployeeUserAccount(
-        refreshedRow,
-        refreshedRow.email,
-        refreshedRow.employee_id,
-        refreshedRow.status || existing.status
-      )
-    } catch (syncError) {
-      console.error(
-        `[v0] Employees: Failed to sync user account during update for ${employee_id}:`,
-        syncError.message
-      )
-    }
-
+    client.release()
     res.json({ message: "Employee updated successfully", employee: mapEmployeeRow(refreshedRow) })
   } catch (error) {
+    await client.query('ROLLBACK')
+    client.release()
+    
     if (error.code === PG_UNDEFINED_TABLE) {
       console.warn("[v0] Employees: table missing during update")
       return res.status(500).json({ detail: "Employee storage is not configured" })
     }
 
-    console.error(`[v0] Error updating employee ${employee_id}: ${error.message}`)
+    console.error(`[v0] Error updating employee ${employee_id}:`, error.message)
     res.status(500).json({ detail: "Failed to update employee" })
   }
 })
@@ -741,7 +905,7 @@ router.get("/:employee_id/profile", async (req, res) => {
  * ✅ PUT /api/employees/:employee_id/profile
  * Update or create an employee profile
  */
-router.put("/:employee_id/profile", async (req, res) => {
+router.put("/:employee_id/profile", extractCompanyId, async (req, res) => {
   const { employee_id } = req.params
   const data = req.body
   console.log(`[v0] Updating profile for employee: ${employee_id}`)
@@ -758,7 +922,7 @@ router.put("/:employee_id/profile", async (req, res) => {
     const employeeCode = employeeRow.employee_id
 
     const departmentName = typeof data.department === "string" ? data.department.trim() : ""
-    const departmentId = departmentName ? await ensureDepartment(departmentName) : null
+    const departmentId = departmentName ? await ensureDepartment(departmentName, req.companyId) : null
 
     const employeeUpdateValues = [employeeUuid]
     const employeeSetStatements = []

@@ -7,6 +7,8 @@ import attendanceRoutes from "./routes/attendance.js";
 import leaveRoutes from "./routes/leave.js";
 import payrollRoutes from "./routes/payroll.js";
 import adminRoutes from "./routes/admin.js";
+import companiesRoutes from "./routes/companies.js";
+import rolesRoutes from "./routes/roles.js";
 import { testConnection, getDatabaseInfo } from "./config/database.js";
 
 dotenv.config();
@@ -37,11 +39,13 @@ app.use((req, res, next) => {
 
 // Routes
 app.use("/api/auth", authRoutes);
+app.use("/api/companies", companiesRoutes);
 app.use("/api/employees", employeeRoutes);
 app.use("/api/attendance", attendanceRoutes);
 app.use("/api/leave", leaveRoutes);
 app.use("/api/payroll", payrollRoutes);
 app.use("/api/admin", adminRoutes);
+app.use("/api/roles", rolesRoutes);
 
 // Health check endpoints (before 404 handler)
 app.get("/", (req, res) => {
