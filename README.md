@@ -2,6 +2,8 @@
 
 A comprehensive, role-based HRMS platform with complete frontend (Next.js) and backend (Node.js/Express) implementation.
 
+Project video => https://drive.google.com/drive/folders/1bHCtG9lB29_Hu6rgdLo_bD4PIZ9s4ANK?usp=drive_link
+
 ## Features
 
 ### Role-Based Access Control
